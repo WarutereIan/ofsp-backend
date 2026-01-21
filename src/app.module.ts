@@ -7,6 +7,13 @@ import { AppService } from './app.service';
 import { PrismaModule } from './modules/prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
+import { ProfileModule } from './modules/profile/profile.module';
+import { MarketplaceModule } from './modules/marketplace/marketplace.module';
+import { InputModule } from './modules/input/input.module';
+import { TransportModule } from './modules/transport/transport.module';
+import { AggregationModule } from './modules/aggregation/aggregation.module';
+import { PaymentModule } from './modules/payment/payment.module';
+import { NotificationModule } from './modules/notification/notification.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -32,12 +39,16 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
     AuthModule,
     UsersModule,
     
-    // Feature modules
-    // MarketplaceModule,
-    // TransportModule,
-    // AggregationModule,
-    // PaymentsModule,
-    // NotificationsModule,
+    // Domain modules
+    ProfileModule,
+    MarketplaceModule,
+    InputModule,
+    TransportModule,
+    AggregationModule,
+    PaymentModule,
+    NotificationModule,
+    // AnalyticsModule,
+    // StaffModule,
   ],
   controllers: [AppController],
   providers: [

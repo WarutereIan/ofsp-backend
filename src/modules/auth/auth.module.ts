@@ -14,12 +14,19 @@ import { UsersModule } from '../users/users.module';
     PassportModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET'),
-        signOptions: {
-          expiresIn: configService.get<string>('JWT_EXPIRATION', '7d'),
-        },
-      }),
+      useFactory: async (configService: ConfigService) => {
+        const secret = configService.get<string>('JWT_SECRET');
+        if (!secret) {
+          throw new Error('JWT_SECRET is not defined');
+        }
+        const expiresIn = configService.get<string>('JWT_EXPIRATION', '7d');
+        return {
+          secret,
+          signOptions: {
+            expiresIn,
+          },
+        } as any; // Type assertion to handle string | number | undefined
+      },
       inject: [ConfigService],
     }),
   ],

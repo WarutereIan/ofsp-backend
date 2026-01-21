@@ -33,43 +33,51 @@ enum UserStatus {
 }
 
 model User {
-  id        String     @id @default(uuid())
-  email     String     @unique
-  phone     String     @unique
-  password  String // Hashed with bcrypt
-  role      UserRole
-  status    UserStatus @default(PENDING_VERIFICATION)
-  
+  id       String     @id @default(uuid())
+  email    String     @unique
+  phone    String     @unique
+  password String // Hashed with bcrypt
+  role     UserRole
+  status   UserStatus @default(PENDING_VERIFICATION)
+
   // Profile
-  profile   Profile?
-  
+  profile Profile?
+
   // Timestamps
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   lastLogin DateTime?
-  
+
   // Relations
-  refreshTokens         RefreshToken[]
-  notifications         Notification[]
-  activityLogs          ActivityLog[]
-  producings            ProduceListing[]
-  orders                MarketplaceOrder[] @relation("BuyerOrders")
-  farmerOrders          MarketplaceOrder[] @relation("FarmerOrders")
-  buyerNegotiations     Negotiation[] @relation("BuyerNegotiations")
-  farmerNegotiations    Negotiation[] @relation("FarmerNegotiations")
-  rfqs                  RFQ[] @relation("BuyerRFQs")
-  rfqResponses          RFQResponse[] @relation("SupplierRFQResponses")
-  sourcingRequests      SourcingRequest[] @relation("BuyerSourcingRequests")
-  supplierOffers        SupplierOffer[] @relation("SupplierOffers")
-  transportRequested    TransportRequest[] @relation("TransportRequester")
-  transportRequests     TransportRequest[] @relation("TransportProviderRequests")
-  qualityChecks         QualityCheck[]
-  inputProducts         Input[]
-  inputOrders           InputOrder[]
-  ratingsGiven          Rating[] @relation("Rater")
-  ratingsReceived       Rating[] @relation("RatedUser")
-  advisories            Advisory[]
-  
+  refreshTokens             RefreshToken[]
+  notifications             Notification[]
+  activityLogs              ActivityLog[]
+  producings                ProduceListing[]
+  orders                    MarketplaceOrder[]  @relation("BuyerOrders")
+  farmerOrders              MarketplaceOrder[]  @relation("FarmerOrders")
+  buyerNegotiations         Negotiation[]       @relation("BuyerNegotiations")
+  farmerNegotiations        Negotiation[]       @relation("FarmerNegotiations")
+  rfqs                      RFQ[]               @relation("BuyerRFQs")
+  rfqResponses              RFQResponse[]       @relation("SupplierRFQResponses")
+  sourcingRequests          SourcingRequest[]   @relation("BuyerSourcingRequests")
+  supplierOffers            SupplierOffer[]     @relation("SupplierOffers")
+  transportRequested        TransportRequest[]  @relation("TransportRequester")
+  transportRequests         TransportRequest[]  @relation("TransportProviderRequests")
+  qualityChecks             QualityCheck[]
+  inputProducts             Input[]
+  inputOrders               InputOrder[]
+  ratingsGiven              Rating[]            @relation("Rater")
+  ratingsReceived           Rating[]            @relation("RatedUser")
+  escrowAsBuyer             EscrowTransaction[] @relation("EscrowBuyer")
+  escrowAsFarmer            EscrowTransaction[] @relation("EscrowFarmer")
+  trackingUpdatesCreated    TrackingUpdate[]    @relation("TrackingUpdateUser")
+  managedCenters            AggregationCenter[] @relation("CenterManager")
+  stockTransactionsAsFarmer StockTransaction[]  @relation("StockTransactionFarmer")
+  inventoryItemsAsFarmer    InventoryItem[]     @relation("InventoryItemFarmer")
+  wastageEntriesAsFarmer    WastageEntry[]      @relation("WastageEntryFarmer")
+  qualityChecksAsFarmer     QualityCheck[]      @relation("QualityCheckFarmer")
+  advisories                Advisory[]
+
   @@index([email])
   @@index([phone])
   @@index([role])
@@ -84,24 +92,24 @@ model RefreshToken {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
   createdAt DateTime @default(now())
-  
+
   @@index([userId])
   @@index([token])
   @@map("refresh_tokens")
 }
 
 model Profile {
-  id             String   @id @default(uuid())
-  userId         String   @unique
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   // Personal Info
-  firstName      String
-  lastName       String
-  nationalId     String?  @unique
-  dateOfBirth    DateTime?
-  gender         String?
-  
+  firstName   String
+  lastName    String
+  nationalId  String?   @unique
+  dateOfBirth DateTime?
+  gender      String?
+
   // Contact
   alternatePhone String?
   address        String?
@@ -109,32 +117,32 @@ model Profile {
   subCounty      String?
   ward           String?
   village        String?
-  coordinates    String?  // lat,lng
-  
+  coordinates    String? // lat,lng
+
   // Business Info (for farmers/providers)
-  businessName   String?
-  businessRegNo  String?
-  farmSize       Float?   // acres
-  
+  businessName  String?
+  businessRegNo String?
+  farmSize      Float? // acres
+
   // Verification
-  isVerified     Boolean  @default(false)
-  verifiedAt     DateTime?
-  verifiedBy     String?
-  
+  isVerified Boolean   @default(false)
+  verifiedAt DateTime?
+  verifiedBy String?
+
   // Banking (for payments)
-  bankName       String?
-  bankAccount    String?
-  mpesaNumber    String?
-  
+  bankName    String?
+  bankAccount String?
+  mpesaNumber String?
+
   // Metadata
-  avatar         String?
-  bio            String?
-  rating         Float?   @default(0)
-  totalRatings   Int      @default(0)
-  
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  
+  avatar       String?
+  bio          String?
+  rating       Float?  @default(0)
+  totalRatings Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([userId])
   @@index([county])
   @@index([ward])
@@ -153,26 +161,32 @@ enum NotificationPriority {
 }
 
 model Notification {
-  id        String               @id @default(uuid())
-  
-  userId    String
-  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  type      String               // ORDER_PLACED, PAYMENT_RECEIVED, etc.
-  title     String
-  message   String
-  priority  NotificationPriority @default(MEDIUM)
-  
+  id String @id @default(uuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type     String // ORDER_PLACED, PAYMENT_RECEIVED, etc.
+  title    String
+  message  String
+  priority NotificationPriority @default(MEDIUM)
+
   // Linked Entity
-  entityType String?             // ORDER, TRANSPORT, etc.
+  entityType String? // ORDER, TRANSPORT, etc.
   entityId   String?
-  
+
   // Status
-  isRead    Boolean              @default(false)
-  readAt    DateTime?
-  
-  createdAt DateTime             @default(now())
-  
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  // Action & Metadata
+  actionUrl   String?
+  actionLabel String?
+  metadata    Json?
+  expiresAt   DateTime?
+
+  createdAt DateTime @default(now())
+
   @@index([userId, isRead])
   @@index([type])
   @@index([entityType, entityId])
@@ -180,21 +194,21 @@ model Notification {
 }
 
 model ActivityLog {
-  id         String   @id @default(uuid())
-  
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  action     String   // USER_LOGIN, ORDER_CREATED, etc.
-  entityType String?  // ORDER, TRANSPORT, etc.
+  id String @id @default(uuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  action     String // USER_LOGIN, ORDER_CREATED, etc.
+  entityType String? // ORDER, TRANSPORT, etc.
   entityId   String?
-  
-  metadata   Json?    // Additional context
-  ipAddress  String?
-  userAgent  String?
-  
-  createdAt  DateTime @default(now())
-  
+
+  metadata  Json? // Additional context
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
   @@index([userId, createdAt])
   @@index([action])
   @@index([entityType, entityId])
@@ -253,45 +267,45 @@ enum PaymentStatus {
 }
 
 model ProduceListing {
-  id              String        @id @default(uuid())
-  farmerId        String
-  farmer          User          @relation(fields: [farmerId], references: [id])
-  
+  id       String @id @default(uuid())
+  farmerId String
+  farmer   User   @relation(fields: [farmerId], references: [id])
+
   // Product Details
-  variety         OFSPVariety
-  quantity        Float         // kg
-  availableQuantity Float       // Remaining quantity (kg)
-  pricePerKg      Float
-  qualityGrade    QualityGrade
-  
+  variety           OFSPVariety
+  quantity          Float // kg
+  availableQuantity Float // Remaining quantity (kg)
+  pricePerKg        Float
+  qualityGrade      QualityGrade
+
   // Harvest Details
-  harvestDate     DateTime
-  expiryDate      DateTime?
-  
+  harvestDate DateTime
+  expiryDate  DateTime?
+
   // Location
-  location        String
-  county          String
-  subCounty       String?
-  coordinates     String?       // lat,lng
-  
+  location    String
+  county      String
+  subCounty   String?
+  coordinates String? // lat,lng
+
   // Media
-  photos          String[]
-  description     String?
-  
+  photos      String[]
+  description String?
+
   // Status
-  status          ListingStatus @default(ACTIVE)
-  
+  status ListingStatus @default(ACTIVE)
+
   // Batch tracking
-  batchId         String?       @unique
-  qrCode          String?
-  
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  
+  batchId String? @unique
+  qrCode  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  orders          MarketplaceOrder[]
-  negotiations    Negotiation[]
-  
+  orders       MarketplaceOrder[]
+  negotiations Negotiation[]
+
   @@index([farmerId])
   @@index([status])
   @@index([variety])
@@ -302,75 +316,75 @@ model ProduceListing {
 }
 
 model MarketplaceOrder {
-  id               String                  @id @default(uuid())
-  orderNumber      String                  @unique
-  
+  id          String @id @default(uuid())
+  orderNumber String @unique
+
   // Parties
-  buyerId          String
-  buyer            User                    @relation("BuyerOrders", fields: [buyerId], references: [id])
-  farmerId         String
-  farmer           User                    @relation("FarmerOrders", fields: [farmerId], references: [id])
-  
+  buyerId  String
+  buyer    User   @relation("BuyerOrders", fields: [buyerId], references: [id])
+  farmerId String
+  farmer   User   @relation("FarmerOrders", fields: [farmerId], references: [id])
+
   // Source (can be from listing, negotiation, RFQ, or sourcing request)
-  listingId        String?
-  listing          ProduceListing?         @relation(fields: [listingId], references: [id])
-  rfqId            String?
-  rfqResponseId    String?                 @unique
+  listingId         String?
+  listing           ProduceListing? @relation(fields: [listingId], references: [id])
+  rfqId             String?
+  rfqResponseId     String?         @unique
   sourcingRequestId String?
-  supplierOfferId  String?                  @unique
-  
+  supplierOfferId   String?         @unique
+
   // Order Details
-  variety          OFSPVariety
-  quantity         Float                   // kg
-  pricePerKg       Float
-  totalAmount      Float
-  
+  variety     OFSPVariety
+  quantity    Float // kg
+  pricePerKg  Float
+  totalAmount Float
+
   // Status & Timeline
-  status           MarketplaceOrderStatus @default(ORDER_PLACED)
-  statusHistory    Json[]                 // Status timeline with timestamps
-  paymentStatus    PaymentStatus          @default(PENDING)
-  
+  status        MarketplaceOrderStatus @default(ORDER_PLACED)
+  statusHistory Json[] // Status timeline with timestamps
+  paymentStatus PaymentStatus          @default(PENDING)
+
   // Delivery
-  deliveryAddress  String
-  deliveryCounty   String
-  deliveryCoordinates String?             // lat,lng
-  deliveryNotes    String?
+  deliveryAddress       String
+  deliveryCounty        String
+  deliveryCoordinates   String? // lat,lng
+  deliveryNotes         String?
   estimatedDeliveryDate DateTime?
-  actualDeliveryDate DateTime?
-  
+  actualDeliveryDate    DateTime?
+
   // Quality
-  qualityScore     Float?
-  qualityFeedback  String?
-  
+  qualityScore    Float?
+  qualityFeedback String?
+
   // Batch Tracking
-  batchId          String?                @unique
-  qrCode           String?
-  
+  batchId String? @unique
+  qrCode  String?
+
   // Media
-  photos           String[]
-  notes            String?
-  
+  photos String[]
+  notes  String?
+
   // Timestamps
-  placedAt         DateTime                @default(now())
-  acceptedAt       DateTime?
-  completedAt      DateTime?
-  
-  createdAt        DateTime                @default(now())
-  updatedAt         DateTime                @updatedAt
-  
+  placedAt    DateTime  @default(now())
+  acceptedAt  DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  negotiation           Negotiation?
-  rfq                   RFQ?                @relation(fields: [rfqId], references: [id])
-  rfqResponse           RFQResponse?        @relation("RFQResponseOrder")
-  sourcingRequest       SourcingRequest?    @relation(fields: [sourcingRequestId], references: [id])
-  supplierOffer         SupplierOffer?      @relation("SupplierOfferOrder")
-  transportRequests     TransportRequest[]
-  stockTransactions     StockTransaction[]
-  qualityCheck           QualityCheck?
-  ratings               Rating[]
-  payment                Payment?           @relation("OrderPayment")
-  escrow                 EscrowTransaction? @relation("OrderEscrow")
-  
+  negotiation       Negotiation?
+  rfq               RFQ?               @relation(fields: [rfqId], references: [id])
+  rfqResponse       RFQResponse?       @relation("RFQResponseOrder")
+  sourcingRequest   SourcingRequest?   @relation(fields: [sourcingRequestId], references: [id])
+  supplierOffer     SupplierOffer?     @relation("SupplierOfferOrder")
+  transportRequests TransportRequest[]
+  stockTransactions StockTransaction[]
+  qualityCheck      QualityCheck?
+  ratings           Rating[]
+  payment           Payment?           @relation("OrderPayment")
+  escrow            EscrowTransaction? @relation("OrderEscrow")
+
   @@index([buyerId])
   @@index([farmerId])
   @@index([status])
@@ -399,43 +413,43 @@ enum NegotiationStatus {
 }
 
 model Negotiation {
-  id                    String                @id @default(uuid())
-  negotiationNumber    String                @unique
-  
+  id                String @id @default(uuid())
+  negotiationNumber String @unique
+
   // Parties
-  listingId             String
-  listing               ProduceListing        @relation(fields: [listingId], references: [id])
-  buyerId               String
-  buyer                 User                  @relation("BuyerNegotiations", fields: [buyerId], references: [id])
-  farmerId              String
-  farmer                User                  @relation("FarmerNegotiations", fields: [farmerId], references: [id])
-  
+  listingId String
+  listing   ProduceListing @relation(fields: [listingId], references: [id])
+  buyerId   String
+  buyer     User           @relation("BuyerNegotiations", fields: [buyerId], references: [id])
+  farmerId  String
+  farmer    User           @relation("FarmerNegotiations", fields: [farmerId], references: [id])
+
   // Original listing details
-  originalPricePerKg    Float
-  originalQuantity      Float
-  
+  originalPricePerKg Float
+  originalQuantity   Float
+
   // Negotiated terms
   negotiatedPricePerKg  Float?
   negotiatedQuantity    Float?
   negotiatedTotalAmount Float?
-  
+
   // Status
-  status                NegotiationStatus    @default(PENDING)
-  
+  status NegotiationStatus @default(PENDING)
+
   // Expiration
-  expiresAt             DateTime?
-  
+  expiresAt DateTime?
+
   // Conversion
-  orderId               String?               @unique
-  order                 MarketplaceOrder?    @relation(fields: [orderId], references: [id])
-  
-  createdAt             DateTime              @default(now())
-  updatedAt              DateTime              @updatedAt
-  lastMessageAt         DateTime?
-  
+  orderId String?           @unique
+  order   MarketplaceOrder? @relation(fields: [orderId], references: [id])
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastMessageAt DateTime?
+
   // Relations
-  messages              NegotiationMessage[]
-  
+  messages NegotiationMessage[]
+
   @@index([buyerId])
   @@index([farmerId])
   @@index([listingId])
@@ -445,23 +459,23 @@ model Negotiation {
 }
 
 model NegotiationMessage {
-  id                String        @id @default(uuid())
-  negotiationId     String
-  negotiation       Negotiation   @relation(fields: [negotiationId], references: [id], onDelete: Cascade)
-  
-  senderId          String
-  senderType        String        // "buyer" | "farmer"
-  
-  message           String?
-  pricePerKg        Float?
-  quantity          Float?
-  totalAmount       Float?
-  
-  isCounterOffer    Boolean       @default(false)
-  readAt            DateTime?
-  
-  createdAt         DateTime      @default(now())
-  
+  id            String      @id @default(uuid())
+  negotiationId String
+  negotiation   Negotiation @relation(fields: [negotiationId], references: [id], onDelete: Cascade)
+
+  senderId   String
+  senderType String // "buyer" | "farmer"
+
+  message     String?
+  pricePerKg  Float?
+  quantity    Float?
+  totalAmount Float?
+
+  isCounterOffer Boolean   @default(false)
+  readAt         DateTime?
+
+  createdAt DateTime @default(now())
+
   @@index([negotiationId])
   @@index([senderId])
   @@map("negotiation_messages")
@@ -501,64 +515,64 @@ enum SourcingRequestStatus {
 }
 
 model RFQ {
-  id                  String            @id @default(uuid())
-  rfqNumber           String            @unique
-  
-  buyerId             String
-  buyer               User              @relation("BuyerRFQs", fields: [buyerId], references: [id])
-  
+  id        String @id @default(uuid())
+  rfqNumber String @unique
+
+  buyerId String
+  buyer   User   @relation("BuyerRFQs", fields: [buyerId], references: [id])
+
   // RFQ Details
-  title               String
-  productType         SourcingProductType
-  variety             OFSPVariety?
-  quantity            Float
-  unit                String            // "tons" | "kg" | "units"
-  priceRangeMin       Float?
-  priceRangeMax       Float?
-  qualityGrade        QualityGrade?
-  
+  title         String
+  productType   SourcingProductType
+  variety       OFSPVariety?
+  quantity      Float
+  unit          String // "tons" | "kg" | "units"
+  priceRangeMin Float?
+  priceRangeMax Float?
+  qualityGrade  QualityGrade?
+
   // Deadlines
-  deadline            DateTime
-  quoteDeadline       DateTime
-  evaluationDeadline  DateTime?
-  
+  deadline           DateTime
+  quoteDeadline      DateTime
+  evaluationDeadline DateTime?
+
   // Delivery
-  deliveryRegion      String?
-  deliveryLocation    String?
-  
+  deliveryRegion   String?
+  deliveryLocation String?
+
   // Additional Info
   additionalRequirements String?
-  termsAndConditions  String?
-  evaluationCriteria  String?
-  
+  termsAndConditions     String?
+  evaluationCriteria     String?
+
   // Recurring
-  isRecurring         Boolean           @default(false)
-  recurringFrequency  String?           // "weekly" | "biweekly" | "monthly" | "quarterly"
-  recurringEndDate    DateTime?
-  nextDeliveryDate    DateTime?
-  
+  isRecurring        Boolean   @default(false)
+  recurringFrequency String? // "weekly" | "biweekly" | "monthly" | "quarterly"
+  recurringEndDate   DateTime?
+  nextDeliveryDate   DateTime?
+
   // Status
-  status              RFQStatus         @default(DRAFT)
-  
+  status RFQStatus @default(DRAFT)
+
   // Denormalized fields for performance
-  totalResponses      Int               @default(0)
-  awardedTo           String[]           // Array of supplier IDs who were awarded
-  
+  totalResponses Int      @default(0)
+  awardedTo      String[] // Array of supplier IDs who were awarded
+
   // Attachments
-  attachments         String[]
-  
+  attachments String[]
+
   // Timestamps
-  publishedAt         DateTime?
-  closedAt            DateTime?
-  awardedAt           DateTime?
-  
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  
+  publishedAt DateTime?
+  closedAt    DateTime?
+  awardedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  responses           RFQResponse[]
-  orders              MarketplaceOrder[]
-  
+  responses RFQResponse[]
+  orders    MarketplaceOrder[]
+
   @@index([buyerId])
   @@index([status])
   @@index([rfqNumber])
@@ -567,53 +581,53 @@ model RFQ {
 }
 
 model RFQResponse {
-  id                  String            @id @default(uuid())
-  
-  rfqId               String
-  rfq                 RFQ               @relation(fields: [rfqId], references: [id], onDelete: Cascade)
-  
-  supplierId          String
-  supplier            User              @relation("SupplierRFQResponses", fields: [supplierId], references: [id])
-  
+  id String @id @default(uuid())
+
+  rfqId String
+  rfq   RFQ    @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+
+  supplierId String
+  supplier   User   @relation("SupplierRFQResponses", fields: [supplierId], references: [id])
+
   // Quote Details
-  quantity            Float
-  quantityUnit        String            // "kg" | "tons" | "units"
-  pricePerUnit        Float
-  priceUnit           String            // "kg" | "unit"
-  totalAmount         Float
-  
+  quantity     Float
+  quantityUnit String // "kg" | "tons" | "units"
+  pricePerUnit Float
+  priceUnit    String // "kg" | "unit"
+  totalAmount  Float
+
   // Product Details
-  variety             OFSPVariety?
-  qualityGrade        QualityGrade
-  
+  variety      OFSPVariety?
+  qualityGrade QualityGrade
+
   // Delivery Terms
-  deliveryTime        String?
-  deliveryLocation    String?
-  paymentTerms        String?
-  
+  deliveryTime     String?
+  deliveryLocation String?
+  paymentTerms     String?
+
   // Batch Tracking
-  batchId             String?
-  qrCode              String?
-  
+  batchId String?
+  qrCode  String?
+
   // Additional Info
-  notes               String?
-  attachments         String[]
-  
+  notes       String?
+  attachments String[]
+
   // Status
-  status              RFQResponseStatus  @default(DRAFT)
-  
+  status RFQResponseStatus @default(DRAFT)
+
   // Timestamps
-  submittedAt         DateTime?
-  evaluatedAt         DateTime?
-  awardedAt           DateTime?
-  
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  
+  submittedAt DateTime?
+  evaluatedAt DateTime?
+  awardedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  orderId             String?           @unique
-  order               MarketplaceOrder? @relation("RFQResponseOrder", fields: [orderId], references: [id])
-  
+  orderId String?           @unique
+  order   MarketplaceOrder? @relation("RFQResponseOrder", fields: [orderId], references: [id])
+
   @@index([rfqId])
   @@index([supplierId])
   @@index([status])
@@ -622,53 +636,53 @@ model RFQResponse {
 }
 
 model SourcingRequest {
-  id                  String            @id @default(uuid())
-  requestId           String            @unique
-  
-  buyerId             String
-  buyer               User              @relation("BuyerSourcingRequests", fields: [buyerId], references: [id])
-  
+  id        String @id @default(uuid())
+  requestId String @unique
+
+  buyerId String
+  buyer   User   @relation("BuyerSourcingRequests", fields: [buyerId], references: [id])
+
   // Request Details
-  title               String
-  productType         SourcingProductType
-  variety             OFSPVariety?
-  quantity            Float
-  unit                String            // "tons" | "kg" | "units"
-  priceRangeMin       Float?
-  priceRangeMax       Float?
-  pricePerUnit        Float?
-  priceUnit           String?           // "kg" | "unit"
-  qualityGrade        QualityGrade?
-  
+  title         String
+  productType   SourcingProductType
+  variety       OFSPVariety?
+  quantity      Float
+  unit          String // "tons" | "kg" | "units"
+  priceRangeMin Float?
+  priceRangeMax Float?
+  pricePerUnit  Float?
+  priceUnit     String? // "kg" | "unit"
+  qualityGrade  QualityGrade?
+
   // Delivery
-  deadline            DateTime
-  deliveryRegion      String?
-  deliveryLocation    String?
-  
+  deadline         DateTime
+  deliveryRegion   String?
+  deliveryLocation String?
+
   // Additional Info
   additionalRequirements String?
-  notes               String?
-  
+  notes                  String?
+
   // Recurring
-  isRecurring         Boolean           @default(false)
-  recurringFrequency  String?
-  recurringEndDate    DateTime?
-  nextDeliveryDate    DateTime?
-  
+  isRecurring        Boolean   @default(false)
+  recurringFrequency String?
+  recurringEndDate   DateTime?
+  nextDeliveryDate   DateTime?
+
   // Status
-  status              SourcingRequestStatus @default(DRAFT)
-  fulfilled           Float             @default(0) // Quantity fulfilled
-  
+  status    SourcingRequestStatus @default(DRAFT)
+  fulfilled Float                 @default(0) // Quantity fulfilled
+
   // Denormalized fields for performance
-  suppliers           String[]           @default([]) // Array of supplier IDs who have responded
-  
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  
+  suppliers String[] @default([]) // Array of supplier IDs who have responded
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  offers              SupplierOffer[]
-  orders              MarketplaceOrder[]
-  
+  offers SupplierOffer[]
+  orders MarketplaceOrder[]
+
   @@index([buyerId])
   @@index([status])
   @@index([requestId])
@@ -677,34 +691,34 @@ model SourcingRequest {
 }
 
 model SupplierOffer {
-  id                  String            @id @default(uuid())
-  
-  sourcingRequestId   String
-  sourcingRequest     SourcingRequest   @relation(fields: [sourcingRequestId], references: [id], onDelete: Cascade)
-  
-  farmerId            String
-  farmer              User              @relation("SupplierOffers", fields: [farmerId], references: [id])
-  
+  id String @id @default(uuid())
+
+  sourcingRequestId String
+  sourcingRequest   SourcingRequest @relation(fields: [sourcingRequestId], references: [id], onDelete: Cascade)
+
+  farmerId String
+  farmer   User   @relation("SupplierOffers", fields: [farmerId], references: [id])
+
   // Offer Details
-  quantity            Float
-  quantityUnit        String            // "kg" | "tons" | "units"
-  pricePerKg          Float
-  qualityGrade        QualityGrade
-  
+  quantity     Float
+  quantityUnit String // "kg" | "tons" | "units"
+  pricePerKg   Float
+  qualityGrade QualityGrade
+
   // Batch Tracking
-  batchId             String?
-  qrCode              String?
-  
+  batchId String?
+  qrCode  String?
+
   // Status
-  status              String            @default("pending") // "pending" | "accepted" | "rejected" | "converted"
-  
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  
+  status String @default("pending") // "pending" | "accepted" | "rejected" | "converted"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  orderId             String?          @unique
-  order               MarketplaceOrder? @relation("SupplierOfferOrder", fields: [orderId], references: [id])
-  
+  orderId String?           @unique
+  order   MarketplaceOrder? @relation("SupplierOfferOrder", fields: [orderId], references: [id])
+
   @@index([sourcingRequestId])
   @@index([farmerId])
   @@index([status])
@@ -721,30 +735,30 @@ enum RecurringFrequency {
 }
 
 model RecurringOrder {
-  id                  String              @id @default(uuid())
-  
-  buyerId             String
-  farmerId            String
-  
-  variety             OFSPVariety
-  quantity            Float               // kg
-  qualityGrade        QualityGrade
-  pricePerKg          Float
-  
-  frequency           RecurringFrequency
-  startDate           DateTime
-  endDate             DateTime?
-  nextDeliveryDate    DateTime
-  
-  isActive            Boolean             @default(true)
-  status              String?             // "active" | "paused" | "cancelled"
-  
-  completedDeliveries Int                 @default(0)
+  id String @id @default(uuid())
+
+  buyerId  String
+  farmerId String
+
+  variety      OFSPVariety
+  quantity     Float // kg
+  qualityGrade QualityGrade
+  pricePerKg   Float
+
+  frequency        RecurringFrequency
+  startDate        DateTime
+  endDate          DateTime?
+  nextDeliveryDate DateTime
+
+  isActive Boolean @default(true)
+  status   String? // "active" | "paused" | "cancelled"
+
+  completedDeliveries Int  @default(0)
   totalDeliveries     Int?
-  
-  createdAt           DateTime            @default(now())
-  updatedAt           DateTime            @updatedAt
-  
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([buyerId])
   @@index([farmerId])
   @@index([isActive])
@@ -789,92 +803,92 @@ enum PickupSlotStatus {
 }
 
 model TransportRequest {
-  id                String                 @id @default(uuid())
-  requestNumber     String                 @unique
-  
+  id            String @id @default(uuid())
+  requestNumber String @unique
+
   // Request Details
-  type              TransportType
-  description       String?
-  
+  type        TransportType
+  description String?
+
   // Parties
-  requesterId       String
-  requester         User                   @relation("TransportRequester", fields: [requesterId], references: [id])
-  requesterType     String                 // "farmer" | "buyer" | "aggregation_center" | "input_provider"
-  providerId        String?
-  provider          User?                  @relation("TransportProviderRequests", fields: [providerId], references: [id])
-  
+  requesterId   String
+  requester     User    @relation("TransportRequester", fields: [requesterId], references: [id])
+  requesterType String // "farmer" | "buyer" | "aggregation_center" | "input_provider"
+  providerId    String?
+  provider      User?   @relation("TransportProviderRequests", fields: [providerId], references: [id])
+
   // Linked Entities
-  orderId           String?
-  order             MarketplaceOrder?     @relation(fields: [orderId], references: [id])
-  
+  orderId String?
+  order   MarketplaceOrder? @relation(fields: [orderId], references: [id])
+
   // Pickup Schedule Integration
-  pickupScheduleId  String?
-  pickupSchedule    FarmPickupSchedule?    @relation(fields: [pickupScheduleId], references: [id])
-  pickupSlotId      String?
-  pickupSlot        PickupSlot?           @relation(fields: [pickupSlotId], references: [id])
-  
+  pickupScheduleId String?
+  pickupSchedule   FarmPickupSchedule? @relation(fields: [pickupScheduleId], references: [id])
+  pickupSlotId     String?
+  pickupSlot       PickupSlot?         @relation(fields: [pickupSlotId], references: [id])
+
   // Locations
-  pickupLocation    String
-  pickupCounty      String
-  pickupCoords      String?               // lat,lng
-  
-  deliveryLocation  String
-  deliveryCounty    String
-  deliveryCoords     String?               // lat,lng
-  
-  distance          Float?                 // km
-  
+  pickupLocation String
+  pickupCounty   String
+  pickupCoords   String? // lat,lng
+
+  deliveryLocation String
+  deliveryCounty   String
+  deliveryCoords   String? // lat,lng
+
+  distance Float? // km
+
   // Cargo
-  cargoDescription  String
-  estimatedWeight   Float                  // kg
-  actualWeight      Float?
-  
+  cargoDescription String
+  estimatedWeight  Float // kg
+  actualWeight     Float?
+
   // Scheduling
   scheduledPickup   DateTime?
   scheduledDelivery DateTime?
   actualPickup      DateTime?
   actualDelivery    DateTime?
-  
+
   // Pricing
-  estimatedCost      Float?
-  agreedCost        Float?
-  
+  estimatedCost Float?
+  agreedCost    Float?
+
   // Status
-  status            TransportRequestStatus @default(PENDING)
-  collectionStatus  String?                // "pending" | "collected" | "ready"
-  collectedBy       String?
-  collectedAt       DateTime?
-  collectionDate    String?                // YYYY-MM-DD format
-  collectionTime    String?                // HH:mm format
-  collectionNotes   String?
-  
+  status           TransportRequestStatus @default(PENDING)
+  collectionStatus String? // "pending" | "collected" | "ready"
+  collectedBy      String?
+  collectedAt      DateTime?
+  collectionDate   String? // YYYY-MM-DD format
+  collectionTime   String? // HH:mm format
+  collectionNotes  String?
+
   // Vehicle & Driver
-  vehicleId         String?
-  vehicleType       String?
-  driverName        String?
-  driverPhone       String?
-  
+  vehicleId   String?
+  vehicleType String?
+  driverName  String?
+  driverPhone String?
+
   // Tracking
-  currentCoordinates String?               // lat,lng
+  currentCoordinates String? // lat,lng
   currentLocation    String?
-  progress          Int?                   // 0-100
-  eta               DateTime?
-  
+  progress           Int? // 0-100
+  eta                DateTime?
+
   // Media & Feedback
-  photos            String[]
-  rating            Float?
-  review            String?
-  notes             String?
-  
-  createdAt         DateTime               @default(now())
-  updatedAt         DateTime               @updatedAt
-  acceptedAt        DateTime?
-  
+  photos String[]
+  rating Float?
+  review String?
+  notes  String?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  acceptedAt DateTime?
+
   // Relations
-  trackingUpdates   TrackingUpdate[]
-  inputOrder        InputOrder?      @relation("InputOrderTransport")
-  payment           Payment?         @relation("TransportPayment")
-  
+  trackingUpdates TrackingUpdate[]
+  inputOrder      InputOrder?      @relation("InputOrderTransport")
+  payment         Payment?         @relation("TransportPayment")
+
   @@index([providerId])
   @@index([requesterId])
   @@index([status])
@@ -885,63 +899,66 @@ model TransportRequest {
 }
 
 model TrackingUpdate {
-  id          String           @id @default(uuid())
-  requestId   String
-  request     TransportRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
-  
-  status      String
-  location    String
-  coordinates String?          // lat,lng
-  notes       String?
-  photos      String[]
-  
-  createdAt   DateTime         @default(now())
-  
+  id        String           @id @default(uuid())
+  requestId String
+  request   TransportRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  status        String
+  location      String
+  coordinates   String? // lat,lng
+  notes         String?
+  photos        String[]
+  updatedBy     String?
+  updatedByUser User?    @relation("TrackingUpdateUser", fields: [updatedBy], references: [id])
+
+  createdAt DateTime @default(now())
+
   @@index([requestId])
   @@index([createdAt])
+  @@index([updatedBy])
   @@map("tracking_updates")
 }
 
 model FarmPickupSchedule {
-  id                    String            @id @default(uuid())
-  scheduleNumber        String            @unique
-  
-  providerId            String
-  aggregationCenterId   String
-  aggregationCenter     AggregationCenter @relation(fields: [aggregationCenterId], references: [id])
-  
-  route                 String
-  scheduledDate         DateTime
-  scheduledTime         String            // HH:mm format
-  estimatedArrivalTime  DateTime?
-  
-  totalCapacity         Float             // kg
-  usedCapacity          Float             @default(0)
-  availableCapacity     Float             // Calculated: totalCapacity - usedCapacity
-  
-  vehicleId             String?
-  vehicleType           String?
-  driverId               String?
-  driverName             String?
-  driverPhone            String?
-  
-  pricePerKg            Float?
-  fixedPrice            Float?
-  
-  status                PickupScheduleStatus @default(DRAFT)
-  notes                 String?
-  
-  publishedAt           DateTime?
-  completedAt           DateTime?
-  
-  createdAt             DateTime          @default(now())
-  updatedAt             DateTime          @updatedAt
-  
+  id             String @id @default(uuid())
+  scheduleNumber String @unique
+
+  providerId          String
+  aggregationCenterId String
+  aggregationCenter   AggregationCenter @relation(fields: [aggregationCenterId], references: [id])
+
+  route                String
+  scheduledDate        DateTime
+  scheduledTime        String // HH:mm format
+  estimatedArrivalTime DateTime?
+
+  totalCapacity     Float // kg
+  usedCapacity      Float @default(0)
+  availableCapacity Float // Calculated: totalCapacity - usedCapacity
+
+  vehicleId   String?
+  vehicleType String?
+  driverId    String?
+  driverName  String?
+  driverPhone String?
+
+  pricePerKg Float?
+  fixedPrice Float?
+
+  status PickupScheduleStatus @default(DRAFT)
+  notes  String?
+
+  publishedAt DateTime?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  pickupLocations       PickupLocation[]
-  slots                 PickupSlot[]
-  transportRequests     TransportRequest[]
-  
+  pickupLocations   PickupLocation[]
+  slots             PickupSlot[]
+  transportRequests TransportRequest[]
+
   @@index([providerId])
   @@index([aggregationCenterId])
   @@index([status])
@@ -951,86 +968,86 @@ model FarmPickupSchedule {
 }
 
 model PickupLocation {
-  id                    String            @id @default(uuid())
-  scheduleId            String
-  schedule               FarmPickupSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  
-  location              String
-  coordinates           String?           // lat,lng
-  subCounty             String?
-  ward                  String?
-  estimatedPickupTime    DateTime?
-  order                 Int               // Order in route (1, 2, 3, ...)
-  
-  createdAt             DateTime          @default(now())
-  
+  id         String             @id @default(uuid())
+  scheduleId String
+  schedule   FarmPickupSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  location            String
+  coordinates         String? // lat,lng
+  subCounty           String?
+  ward                String?
+  estimatedPickupTime DateTime?
+  order               Int // Order in route (1, 2, 3, ...)
+
+  createdAt DateTime @default(now())
+
   // Relations
-  slots                 PickupSlot[]
-  
+  slots PickupSlot[]
+
   @@index([scheduleId])
   @@map("pickup_locations")
 }
 
 model PickupSlot {
-  id                    String            @id @default(uuid())
-  scheduleId            String
-  schedule               FarmPickupSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  
-  locationId            String?
-  location              PickupLocation?   @relation(fields: [locationId], references: [id])
-  
-  startTime             DateTime
-  endTime               DateTime
-  capacity              Float             // kg
-  usedCapacity          Float             @default(0)
-  availableCapacity     Float             // Calculated
-  
-  status                PickupSlotStatus  @default(AVAILABLE)
-  
-  createdAt             DateTime          @default(now())
-  updatedAt             DateTime          @updatedAt
-  
+  id         String             @id @default(uuid())
+  scheduleId String
+  schedule   FarmPickupSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  locationId String?
+  location   PickupLocation? @relation(fields: [locationId], references: [id])
+
+  startTime         DateTime
+  endTime           DateTime
+  capacity          Float // kg
+  usedCapacity      Float    @default(0)
+  availableCapacity Float // Calculated
+
+  status PickupSlotStatus @default(AVAILABLE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  bookings              PickupSlotBooking[]
-  transportRequests     TransportRequest[]
-  
+  bookings          PickupSlotBooking[]
+  transportRequests TransportRequest[]
+
   @@index([scheduleId])
   @@index([status])
   @@map("pickup_slots")
 }
 
 model PickupSlotBooking {
-  id                    String            @id @default(uuid())
-  
-  slotId                String
-  slot                  PickupSlot       @relation(fields: [slotId], references: [id], onDelete: Cascade)
-  scheduleId            String
-  farmerId              String
-  
-  quantity              Float             // kg
-  location              String
-  coordinates           String?           // lat,lng
-  contactPhone          String
-  notes                 String?
-  
+  id String @id @default(uuid())
+
+  slotId     String
+  slot       PickupSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  scheduleId String
+  farmerId   String
+
+  quantity     Float // kg
+  location     String
+  coordinates  String? // lat,lng
+  contactPhone String
+  notes        String?
+
   // Pickup Confirmation
-  batchId               String?           @unique
-  qrCode                String?
-  pickupConfirmed       Boolean          @default(false)
-  pickupConfirmedAt     DateTime?
-  pickupConfirmedBy      String?
-  pickupReceiptId       String?          @unique
-  pickupReceipt         PickupReceipt?   @relation("BookingReceipt")
-  
-  variety               String?
-  qualityGrade          QualityGrade?
-  photos                String[]
-  
-  status                String           @default("confirmed") // "confirmed" | "cancelled" | "picked_up" | "completed"
-  
-  bookedAt              DateTime          @default(now())
-  cancelledAt           DateTime?
-  
+  batchId           String?        @unique
+  qrCode            String?
+  pickupConfirmed   Boolean        @default(false)
+  pickupConfirmedAt DateTime?
+  pickupConfirmedBy String?
+  pickupReceiptId   String?        @unique
+  pickupReceipt     PickupReceipt? @relation("BookingReceipt")
+
+  variety      String?
+  qualityGrade QualityGrade?
+  photos       String[]
+
+  status String @default("confirmed") // "confirmed" | "cancelled" | "picked_up" | "completed"
+
+  bookedAt    DateTime  @default(now())
+  cancelledAt DateTime?
+
   @@index([slotId])
   @@index([scheduleId])
   @@index([farmerId])
@@ -1040,36 +1057,36 @@ model PickupSlotBooking {
 }
 
 model PickupReceipt {
-  id                    String            @id @default(uuid())
-  receiptNumber         String            @unique
-  
-  bookingId             String            @unique
-  booking               PickupSlotBooking @relation("BookingReceipt", fields: [bookingId], references: [id])
-  
-  scheduleId            String
-  farmerId              String
-  providerId            String
-  aggregationCenterId   String
-  aggregationCenter     AggregationCenter @relation(fields: [aggregationCenterId], references: [id])
-  
-  batchId               String            @unique
-  qrCode                String
-  
-  quantity              Float             // kg
-  variety               String
-  qualityGrade          QualityGrade
-  
+  id            String @id @default(uuid())
+  receiptNumber String @unique
+
+  bookingId String            @unique
+  booking   PickupSlotBooking @relation("BookingReceipt", fields: [bookingId], references: [id])
+
+  scheduleId          String
+  farmerId            String
+  providerId          String
+  aggregationCenterId String
+  aggregationCenter   AggregationCenter @relation(fields: [aggregationCenterId], references: [id])
+
+  batchId String @unique
+  qrCode  String
+
+  quantity     Float // kg
+  variety      String
+  qualityGrade QualityGrade
+
   pickupLocation        String
   pickupDate            DateTime
-  pickupTime            String            // HH:mm format
+  pickupTime            String // HH:mm format
   scheduledDeliveryDate DateTime?
-  
-  photos                String[]
-  notes                 String?
-  
-  createdBy             String
-  createdAt             DateTime          @default(now())
-  
+
+  photos String[]
+  notes  String?
+
+  createdBy String
+  createdAt DateTime @default(now())
+
   @@index([farmerId])
   @@index([batchId])
   @@index([receiptNumber])
@@ -1113,42 +1130,51 @@ enum WastageCategory {
 }
 
 model AggregationCenter {
-  id               String              @id @default(uuid())
-  name             String
-  code             String              @unique
-  
+  id   String @id @default(uuid())
+  name String
+  code String @unique
+
   // Location
-  location         String
-  county           String
-  subCounty        String?
-  ward             String?
-  coordinates      String?             // lat,lng
-  centerType       CenterType          @default(MAIN)
-  mainCenterId     String?             // For satellite centers
-  
+  location     String
+  county       String
+  subCounty    String?
+  ward         String?
+  coordinates  String? // lat,lng
+  centerType   CenterType         @default(MAIN)
+  mainCenterId String? // For satellite centers
+  mainCenter   AggregationCenter? @relation("MainSatellite", fields: [mainCenterId], references: [id])
+
   // Capacity
-  totalCapacity    Float               // kg
-  currentStock     Float               @default(0)
-  
+  totalCapacity Float // kg
+  currentStock  Float @default(0)
+
+  // Denormalized fields for performance
+  activeFarmers Int      @default(0)
+  stockInToday  Float    @default(0) // kg
+  stockOutToday Float    @default(0) // kg
+  alerts        String[] // Array of alert messages
+
   // Management
-  managerId        String?
-  managerName      String
-  managerPhone     String
-  status           CenterStatus        @default(OPERATIONAL)
-  
-  isActive         Boolean             @default(true)
-  
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
-  
+  managerId    String?
+  manager      User?        @relation("CenterManager", fields: [managerId], references: [id])
+  managerName  String
+  managerPhone String
+  status       CenterStatus @default(OPERATIONAL)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  inventory        InventoryItem[]
+  inventory         InventoryItem[]
   stockTransactions StockTransaction[]
-  qualityChecks    QualityCheck[]
-  pickupSchedules  FarmPickupSchedule[]
-  pickupReceipts   PickupReceipt[]
-  wastageEntries   WastageEntry[]
-  
+  qualityChecks     QualityCheck[]
+  pickupSchedules   FarmPickupSchedule[]
+  pickupReceipts    PickupReceipt[]
+  wastageEntries    WastageEntry[]
+  satelliteCenters  AggregationCenter[]  @relation("MainSatellite")
+
   @@index([code])
   @@index([status])
   @@index([county])
@@ -1156,45 +1182,49 @@ model AggregationCenter {
 }
 
 model StockTransaction {
-  id               String                @id @default(uuid())
-  transactionNumber String               @unique
-  
-  centerId         String
-  center           AggregationCenter     @relation(fields: [centerId], references: [id])
-  
-  type             StockTransactionType
-  
+  id                String @id @default(uuid())
+  transactionNumber String @unique
+
+  centerId String
+  center   AggregationCenter @relation(fields: [centerId], references: [id])
+
+  // Denormalized field for performance
+  centerName String? // Denormalized center name
+
+  type StockTransactionType
+
   // Product Details
-  variety          String
-  quantity         Float                 // kg
-  qualityGrade     QualityGrade
-  pricePerKg       Float?
-  totalAmount      Float?
-  
+  variety      String
+  quantity     Float // kg
+  qualityGrade QualityGrade
+  pricePerKg   Float?
+  totalAmount  Float?
+
   // Source/Destination
-  orderId          String?
-  order            MarketplaceOrder?     @relation(fields: [orderId], references: [id])
-  
-  farmerId         String?
-  farmerName       String?
-  buyerId          String?
-  buyerName        String?
-  
+  orderId String?
+  order   MarketplaceOrder? @relation(fields: [orderId], references: [id])
+
+  farmerId   String?
+  farmer     User?   @relation("StockTransactionFarmer", fields: [farmerId], references: [id])
+  farmerName String?
+  buyerId    String?
+  buyerName  String?
+
   // Batch Tracking
-  batchId          String?
-  qrCode           String?
-  
+  batchId String?
+  qrCode  String?
+
   // Media
-  photos           String[]
-  notes            String?
-  
+  photos String[]
+  notes  String?
+
   // Transaction Details
-  receivedBy       String?
-  releasedBy       String?
-  createdBy        String?
-  
-  createdAt        DateTime              @default(now())
-  
+  receivedBy String?
+  releasedBy String?
+  createdBy  String?
+
+  createdAt DateTime @default(now())
+
   @@index([centerId])
   @@index([batchId])
   @@index([type])
@@ -1204,38 +1234,39 @@ model StockTransaction {
 }
 
 model InventoryItem {
-  id            String            @id @default(uuid())
-  
-  centerId      String
-  center        AggregationCenter @relation(fields: [centerId], references: [id])
-  
+  id String @id @default(uuid())
+
+  centerId String
+  center   AggregationCenter @relation(fields: [centerId], references: [id])
+
   // Product Details
-  variety       String
-  quantity      Float             // kg
-  qualityGrade  QualityGrade
-  
+  variety      String
+  quantity     Float // kg
+  qualityGrade QualityGrade
+
   // Batch Info
-  batchId       String            @unique
-  stockInDate   DateTime
-  expiryDate    DateTime?
-  
+  batchId     String    @unique
+  stockInDate DateTime
+  expiryDate  DateTime?
+
   // Source
-  farmerId      String?
-  farmerName    String?
-  stockTransactionId String?       // Related stock in transaction
-  
+  farmerId           String?
+  farmer             User?   @relation("InventoryItemFarmer", fields: [farmerId], references: [id])
+  farmerName         String?
+  stockTransactionId String? // Related stock in transaction
+
   // Storage Conditions
-  temperature   Float?            // Celsius
-  humidity      Float?            // percentage
-  location      String?           // Storage location within center
-  
+  temperature Float? // Celsius
+  humidity    Float? // percentage
+  location    String? // Storage location within center
+
   // Status
-  status        StockStatus       @default(FRESH)
-  storageDuration Int?            // days
-  
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  
+  status          StockStatus @default(FRESH)
+  storageDuration Int? // days
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([centerId])
   @@index([batchId])
   @@index([status])
@@ -1244,48 +1275,59 @@ model InventoryItem {
 }
 
 model QualityCheck {
-  id               String            @id @default(uuid())
-  
-  centerId         String
-  center           AggregationCenter @relation(fields: [centerId], references: [id])
-  
-  orderId          String?           @unique
-  order            MarketplaceOrder? @relation(fields: [orderId], references: [id])
-  
-  transactionId    String?           // Related stock transaction
-  
+  id String @id @default(uuid())
+
+  centerId String
+  center   AggregationCenter @relation(fields: [centerId], references: [id])
+
+  orderId String?           @unique
+  order   MarketplaceOrder? @relation(fields: [orderId], references: [id])
+
+  transactionId String? // Related stock transaction
+
+  // Denormalized fields for performance
+  farmerId   String?
+  farmer     User?   @relation("QualityCheckFarmer", fields: [farmerId], references: [id])
+  farmerName String?
+  batchId    String? // Batch ID for traceability
+
   // Product Details
-  variety          String
-  quantity         Float             // kg
-  
+  variety  String
+  quantity Float // kg
+
   // Grading Matrix Criteria
-  weightRange      String?           // small, medium, large, extra_large
-  colorIntensity   Int?              // 1-10 scale
-  physicalCondition String?          // excellent, good, fair, poor
-  freshness        String?           // very_fresh, fresh, moderate, aging
-  daysSinceHarvest Int?
-  
+  weightRange       String? // small, medium, large, extra_large
+  colorIntensity    Int? // 1-10 scale
+  physicalCondition String? // excellent, good, fair, poor
+  freshness         String? // very_fresh, fresh, moderate, aging
+  daysSinceHarvest  Int?
+
   // Assessment Results
   qualityGrade     QualityGrade
-  qualityScore     Float?            // 0-100
-  colorScore       Float?            // 0-10
-  damageScore      Float?            // 0-10
+  qualityScore     Float? // 0-100
+  colorScore       Float? // 0-10
+  damageScore      Float? // 0-10
   sizeScore        Float?
-  dryMatterContent Float?            // percentage
-  
+  dryMatterContent Float? // percentage
+
   // Decision
-  approved         Boolean
-  rejectionReason  String?
-  
+  approved        Boolean
+  rejectionReason String?
+
+  // Status fields (aliases for frontend compatibility)
+  passed Boolean? // Alias for approved
+  failed Boolean? // Alias for !approved
+  status String? // "approved" | "rejected" | "pending"
+
   // Media
-  photos           String[]
-  notes            String?
-  
+  photos String[]
+  notes  String?
+
   // Auditing
-  checkedBy        String
-  checker          User              @relation(fields: [checkedBy], references: [id])
-  checkedAt        DateTime          @default(now())
-  
+  checkedBy String
+  checker   User     @relation(fields: [checkedBy], references: [id])
+  checkedAt DateTime @default(now())
+
   @@index([centerId])
   @@index([orderId])
   @@index([transactionId])
@@ -1295,26 +1337,32 @@ model QualityCheck {
 }
 
 model WastageEntry {
-  id                String            @id @default(uuid())
-  
-  centerId          String
-  center            AggregationCenter @relation(fields: [centerId], references: [id])
-  
-  batchId           String?
-  inventoryItemId   String?
-  
-  variety           String
-  quantity          Float             // kg
-  qualityGrade      QualityGrade
-  category          WastageCategory
-  reason            String?
-  
-  recordedBy         String
-  recordedAt         DateTime         @default(now())
-  
-  notes             String?
-  photos            String[]
-  
+  id String @id @default(uuid())
+
+  centerId String
+  center   AggregationCenter @relation(fields: [centerId], references: [id])
+
+  batchId         String?
+  inventoryItemId String?
+
+  // Denormalized fields for performance
+  farmerId       String?
+  farmer         User?   @relation("WastageEntryFarmer", fields: [farmerId], references: [id])
+  farmerName     String?
+  recordedByName String? // Denormalized recorder name
+
+  variety      String
+  quantity     Float // kg
+  qualityGrade QualityGrade
+  category     WastageCategory
+  reason       String?
+
+  recordedBy String
+  recordedAt DateTime @default(now())
+
+  notes  String?
+  photos String[]
+
   @@index([centerId])
   @@index([batchId])
   @@index([category])
@@ -1334,40 +1382,47 @@ enum PaymentMethod {
 }
 
 model Payment {
-  id             String         @id @default(uuid())
-  referenceNumber String        @unique
-  
+  id              String @id @default(uuid())
+  referenceNumber String @unique
+
   // Linked Entity
-  orderId        String?        @unique
-  order          MarketplaceOrder? @relation("OrderPayment", fields: [orderId], references: [id])
-  
-  transportId    String?        @unique
-  transport      TransportRequest? @relation("TransportPayment", fields: [transportId], references: [id])
-  
-  inputOrderId   String?        @unique
-  inputOrder     InputOrder?    @relation("InputOrderPayment", fields: [inputOrderId], references: [id])
-  
+  orderId String?           @unique
+  order   MarketplaceOrder? @relation("OrderPayment", fields: [orderId], references: [id])
+
+  transportId String?           @unique
+  transport   TransportRequest? @relation("TransportPayment", fields: [transportId], references: [id])
+
+  inputOrderId String?     @unique
+  inputOrder   InputOrder? @relation("InputOrderPayment", fields: [inputOrderId], references: [id])
+
   // Payment Details
-  amount         Float
-  method         PaymentMethod
-  status         PaymentStatus  @default(PENDING)
-  
+  amount    Float
+  currency  String        @default("KES")
+  method    PaymentMethod
+  status    PaymentStatus @default(PENDING)
+  orderType String? // "marketplace" | "input" | "transport"
+
   // Parties
-  payerId        String
-  payeeId        String
-  
+  payerId String
+  payeeId String
+
   // Transaction Details
-  transactionId  String?        @unique
-  providerRef    String?        // External payment provider reference
-  
+  transactionId        String? @unique
+  providerRef          String? // External payment provider reference
+  transactionReference String? // Alias for providerRef or separate reference
+  metadata             Json? // Additional payment data
+
   // Timestamps
-  initiatedAt    DateTime       @default(now())
-  securedAt      DateTime?
-  releasedAt     DateTime?
-  
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  
+  initiatedAt   DateTime  @default(now())
+  securedAt     DateTime?
+  releasedAt    DateTime?
+  completedAt   DateTime?
+  failedAt      DateTime?
+  failureReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([status])
   @@index([referenceNumber])
   @@index([payerId])
@@ -1377,28 +1432,47 @@ model Payment {
 }
 
 model EscrowTransaction {
-  id             String                @id @default(uuid())
-  
-  orderId        String                @unique
-  order          MarketplaceOrder      @relation("OrderEscrow", fields: [orderId], references: [id])
-  
-  amount         Float
-  status         PaymentStatus         @default(SECURED)
-  
+  id String @id @default(uuid())
+
+  orderId String           @unique
+  order   MarketplaceOrder @relation("OrderEscrow", fields: [orderId], references: [id])
+
+  amount Float
+  status PaymentStatus @default(SECURED)
+
+  // Denormalized fields for performance
+  buyerId    String?
+  buyer      User?   @relation("EscrowBuyer", fields: [buyerId], references: [id])
+  buyerName  String?
+  farmerId   String?
+  farmer     User?   @relation("EscrowFarmer", fields: [farmerId], references: [id])
+  farmerName String?
+
   // Release Conditions
-  releaseCondition String?             // Condition for auto-release
-  
+  releaseCondition String? // Condition for auto-release
+
+  // Timestamps
+  securedAt        DateTime?
+  qualityCheckedAt DateTime?
+  releasedAt       DateTime?
+
   // Dispute
-  disputeReason  String?
-  disputedBy     String?
-  disputedAt     DateTime?
-  resolvedAt     DateTime?
-  
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
-  
+  disputeReason String?
+  disputedBy    String?
+  disputedAt    DateTime?
+  resolvedAt    DateTime?
+
+  // Refund
+  refundedAt   DateTime?
+  refundReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([orderId])
   @@index([status])
+  @@index([buyerId])
+  @@index([farmerId])
   @@map("escrow_transactions")
 }
 
@@ -1439,33 +1513,33 @@ enum InputPaymentStatus {
 }
 
 model Input {
-  id              String            @id @default(uuid())
-  
-  providerId      String
-  provider        User              @relation(fields: [providerId], references: [id])
-  
-  name            String
-  category        InputCategory
-  description     String
-  price           Float             // Price per unit
-  unit            String            // e.g., "cutting", "kg", "book", "bag"
-  stock           Int               // Available stock
-  minimumStock    Int?
-  
-  images          String[]
-  location        String
-  
-  rating          Float?
-  reviews         Int?              @default(0)
-  
-  status          InputStatus       @default(ACTIVE)
-  
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  
+  id String @id @default(uuid())
+
+  providerId String
+  provider   User   @relation(fields: [providerId], references: [id])
+
+  name         String
+  category     InputCategory
+  description  String
+  price        Float // Price per unit
+  unit         String // e.g., "cutting", "kg", "book", "bag"
+  stock        Int // Available stock
+  minimumStock Int?
+
+  images   String[]
+  location String
+
+  rating  Float?
+  reviews Int?   @default(0)
+
+  status InputStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  orders          InputOrder[]
-  
+  orders InputOrder[]
+
   @@index([providerId])
   @@index([category])
   @@index([status])
@@ -1473,37 +1547,37 @@ model Input {
 }
 
 model InputOrder {
-  id              String            @id @default(uuid())
-  orderNumber     String            @unique
-  
-  farmerId        String
-  farmer          User                @relation(fields: [farmerId], references: [id])
-  inputId         String
-  input           Input              @relation(fields: [inputId], references: [id])
-  
-  quantity        Int
-  unit            String
-  pricePerUnit    Float
-  subtotal        Float
-  transportFee    Float
-  totalAmount     Float
-  
-  status          InputOrderStatus   @default(PENDING)
-  paymentStatus   InputPaymentStatus @default(PENDING)
-  
-  deliveryDate    DateTime?
-  notes           String?
-  
-  requiresTransport Boolean          @default(false)
-  transportRequestId String?         @unique
-  transportRequest TransportRequest? @relation("InputOrderTransport", fields: [transportRequestId], references: [id])
-  
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  
+  id          String @id @default(uuid())
+  orderNumber String @unique
+
+  farmerId String
+  farmer   User   @relation(fields: [farmerId], references: [id])
+  inputId  String
+  input    Input  @relation(fields: [inputId], references: [id])
+
+  quantity     Int
+  unit         String
+  pricePerUnit Float
+  subtotal     Float
+  transportFee Float
+  totalAmount  Float
+
+  status        InputOrderStatus   @default(PENDING)
+  paymentStatus InputPaymentStatus @default(PENDING)
+
+  deliveryDate DateTime?
+  notes        String?
+
+  requiresTransport  Boolean           @default(false)
+  transportRequestId String?           @unique
+  transportRequest   TransportRequest? @relation("InputOrderTransport", fields: [transportRequestId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  payment         Payment?          @relation("InputOrderPayment")
-  
+  payment Payment? @relation("InputOrderPayment")
+
   @@index([farmerId])
   @@index([inputId])
   @@index([status])
@@ -1525,23 +1599,23 @@ enum AdvisoryType {
 }
 
 model Rating {
-  id              String            @id @default(uuid())
-  
-  raterId         String
-  rater           User              @relation("Rater", fields: [raterId], references: [id])
-  
-  ratedUserId     String
-  ratedUser       User              @relation("RatedUser", fields: [ratedUserId], references: [id])
-  
-  orderId         String?
-  order           MarketplaceOrder? @relation(fields: [orderId], references: [id])
-  
-  rating          Int               // 1-5
-  review          String?
-  
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  
+  id String @id @default(uuid())
+
+  raterId String
+  rater   User   @relation("Rater", fields: [raterId], references: [id])
+
+  ratedUserId String
+  ratedUser   User   @relation("RatedUser", fields: [ratedUserId], references: [id])
+
+  orderId String?
+  order   MarketplaceOrder? @relation(fields: [orderId], references: [id])
+
+  rating Int // 1-5
+  review String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([ratedUserId])
   @@index([orderId])
   @@index([raterId])
@@ -1549,36 +1623,36 @@ model Rating {
 }
 
 model Advisory {
-  id              String            @id @default(uuid())
-  
-  createdBy       String
-  creator         User              @relation(fields: [createdBy], references: [id])
-  
-  type            AdvisoryType
-  title           String
-  content         String
-  category        String?
-  priority        String?           // "low" | "medium" | "high"
-  
-  targetAudience  String[]          // Array of roles or specific targets
-  targetValue     String?           // Specific sub_county, farmer_group, etc.
-  
-  effectiveDate   DateTime?
-  expiryDate      DateTime?
-  
-  attachments     String[]
-  
-  isActive        Boolean           @default(true)
-  views           Int               @default(0)
-  
-  status          String?           // "draft" | "sent" | "delivered" | "failed"
-  sentDate        DateTime?
-  deliveryCount   Int?              @default(0)
-  readCount       Int?              @default(0)
-  
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  
+  id String @id @default(uuid())
+
+  createdBy String
+  creator   User   @relation(fields: [createdBy], references: [id])
+
+  type     AdvisoryType
+  title    String
+  content  String
+  category String?
+  priority String? // "low" | "medium" | "high"
+
+  targetAudience String[] // Array of roles or specific targets
+  targetValue    String? // Specific sub_county, farmer_group, etc.
+
+  effectiveDate DateTime?
+  expiryDate    DateTime?
+
+  attachments String[]
+
+  isActive Boolean @default(true)
+  views    Int     @default(0)
+
+  status        String? // "draft" | "sent" | "delivered" | "failed"
+  sentDate      DateTime?
+  deliveryCount Int?      @default(0)
+  readCount     Int?      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([createdBy])
   @@index([type])
   @@index([isActive])

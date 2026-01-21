@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Body } from '@nestjs/common';
+import { Controller, Get, Patch, Body, Param } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -38,7 +38,7 @@ export class UsersController {
   @ApiOperation({ summary: 'Get user by ID (Admin only)' })
   @ApiResponse({ status: 200, description: 'User retrieved' })
   @ApiResponse({ status: 404, description: 'User not found' })
-  async getUserById(@CurrentUser('id') id: string) {
+  async getUserById(@Param('id') id: string) {
     return this.usersService.findById(id);
   }
 }
