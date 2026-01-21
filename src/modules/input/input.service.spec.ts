@@ -2,11 +2,15 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { InputService } from './input.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { NotificationHelperService } from '../../common/services/notification.service';
+import { ActivityLogService } from '../../common/services/activity-log.service';
 import { mockPrismaService } from '../../test/test-utils';
 
 describe('InputService', () => {
   let service: InputService;
   let prisma: jest.Mocked<PrismaService>;
+  let notificationHelperService: jest.Mocked<NotificationHelperService>;
+  let activityLogService: jest.Mocked<ActivityLogService>;
 
   const mockInput = {
     id: 'input-1',
@@ -61,18 +65,61 @@ describe('InputService', () => {
   };
 
   beforeEach(async () => {
+    const mockNotificationHelperService = {
+      createNotifications: jest.fn().mockResolvedValue([]),
+      createNotification: jest.fn().mockResolvedValue({}),
+    };
+
+    const mockActivityLogService = {
+      createActivityLog: jest.fn().mockResolvedValue({}),
+      createActivityLogs: jest.fn().mockResolvedValue([]),
+    };
+
+    // Extend mockPrismaService with input and inputOrder models
+    const extendedMockPrisma = {
+      ...mockPrismaService,
+      input: {
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+        delete: jest.fn(),
+        count: jest.fn(),
+        groupBy: jest.fn(),
+      },
+      inputOrder: {
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+        delete: jest.fn(),
+        count: jest.fn(),
+        groupBy: jest.fn(),
+      },
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         InputService,
         {
           provide: PrismaService,
-          useValue: mockPrismaService,
+          useValue: extendedMockPrisma,
+        },
+        {
+          provide: NotificationHelperService,
+          useValue: mockNotificationHelperService,
+        },
+        {
+          provide: ActivityLogService,
+          useValue: mockActivityLogService,
         },
       ],
     }).compile();
 
     service = module.get<InputService>(InputService);
     prisma = module.get(PrismaService);
+    notificationHelperService = module.get(NotificationHelperService);
+    activityLogService = module.get(ActivityLogService);
   });
 
   afterEach(() => {
@@ -181,6 +228,8 @@ describe('InputService', () => {
         .fn()
         .mockResolvedValue([{ generate_input_order_number: 'INP-20250121-000001' }]);
       prisma.inputOrder.create = jest.fn().mockResolvedValue(mockInputOrder);
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
 
       const result = await service.createInputOrder(orderData, 'user-2');
 
@@ -200,6 +249,63 @@ describe('InputService', () => {
         service.createInputOrder(orderData, 'user-2'),
       ).rejects.toThrow(BadRequestException);
     });
+
+    it('should create notifications for provider and farmer when order is created', async () => {
+      const orderData = {
+        inputId: 'input-1',
+        quantity: 10,
+        requiresTransport: false,
+      };
+
+      prisma.input.findUnique = jest.fn().mockResolvedValue(mockInput);
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_input_order_number: 'INP-20250121-000001' }]);
+      prisma.inputOrder.create = jest.fn().mockResolvedValue(mockInputOrder);
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      await service.createInputOrder(orderData, 'user-2');
+
+      expect(notificationHelperService.createNotifications).toHaveBeenCalledTimes(1);
+      const notificationsCall = notificationHelperService.createNotifications.mock.calls[0][0];
+      expect(notificationsCall).toHaveLength(2);
+      expect(notificationsCall[0].userId).toBe('user-1'); // Provider
+      expect(notificationsCall[0].title).toBe('New Input Order Received');
+      expect(notificationsCall[1].userId).toBe('user-2'); // Farmer
+      expect(notificationsCall[1].title).toBe('Input Order Placed Successfully');
+    });
+
+    it('should create activity log when order is created', async () => {
+      const orderData = {
+        inputId: 'input-1',
+        quantity: 10,
+        requiresTransport: false,
+      };
+
+      prisma.input.findUnique = jest.fn().mockResolvedValue(mockInput);
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_input_order_number: 'INP-20250121-000001' }]);
+      prisma.inputOrder.create = jest.fn().mockResolvedValue(mockInputOrder);
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      await service.createInputOrder(orderData, 'user-2');
+
+      expect(activityLogService.createActivityLog).toHaveBeenCalledTimes(1);
+      expect(activityLogService.createActivityLog).toHaveBeenCalledWith({
+        userId: 'user-2',
+        action: 'INPUT_ORDER_CREATED',
+        entityType: 'INPUT_ORDER',
+        entityId: mockInputOrder.id,
+        metadata: {
+          orderNumber: mockInputOrder.orderNumber,
+          inputId: 'input-1',
+          quantity: 10,
+        },
+      });
+    });
   });
 
   describe('updateInputOrderStatus', () => {
@@ -213,7 +319,11 @@ describe('InputService', () => {
       prisma.inputOrder.update = jest.fn().mockResolvedValue({
         ...mockInputOrder,
         status: 'ACCEPTED',
+        farmer: mockInputOrder.farmer,
+        input: mockInput,
       });
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
 
       const result = await service.updateInputOrderStatus(
         'order-1',
@@ -230,6 +340,119 @@ describe('InputService', () => {
           },
         },
       });
+    });
+
+    it('should not reduce stock when status is not ACCEPTED', async () => {
+      prisma.inputOrder.findUnique = jest.fn().mockResolvedValue(mockInputOrder);
+      prisma.input.findUnique = jest.fn().mockResolvedValue(mockInput);
+      prisma.inputOrder.update = jest.fn().mockResolvedValue({
+        ...mockInputOrder,
+        status: 'PROCESSING',
+        farmer: mockInputOrder.farmer,
+        input: mockInput,
+      });
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      await service.updateInputOrderStatus(
+        'order-1',
+        { status: 'PROCESSING' },
+        'user-1',
+      );
+
+      expect(prisma.input.update).not.toHaveBeenCalled();
+    });
+
+    it('should not reduce stock when order is already ACCEPTED', async () => {
+      const acceptedOrder = {
+        ...mockInputOrder,
+        status: 'ACCEPTED',
+      };
+      prisma.inputOrder.findUnique = jest.fn().mockResolvedValue(acceptedOrder);
+      prisma.input.findUnique = jest.fn().mockResolvedValue(mockInput);
+      prisma.inputOrder.update = jest.fn().mockResolvedValue({
+        ...acceptedOrder,
+        status: 'PROCESSING',
+        farmer: mockInputOrder.farmer,
+        input: mockInput,
+      });
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      await service.updateInputOrderStatus(
+        'order-1',
+        { status: 'PROCESSING' },
+        'user-1',
+      );
+
+      expect(prisma.input.update).not.toHaveBeenCalled();
+    });
+
+    it('should create notifications when status is updated', async () => {
+      prisma.inputOrder.findUnique = jest.fn().mockResolvedValue(mockInputOrder);
+      prisma.input.findUnique = jest.fn().mockResolvedValue(mockInput);
+      prisma.inputOrder.update = jest.fn().mockResolvedValue({
+        ...mockInputOrder,
+        status: 'DELIVERED',
+        farmer: mockInputOrder.farmer,
+        input: mockInput,
+      });
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      await service.updateInputOrderStatus(
+        'order-1',
+        { status: 'DELIVERED' },
+        'user-1',
+      );
+
+      expect(notificationHelperService.createNotifications).toHaveBeenCalledTimes(1);
+      const notificationsCall = notificationHelperService.createNotifications.mock.calls[0][0];
+      expect(notificationsCall).toHaveLength(1);
+      expect(notificationsCall[0].userId).toBe('user-2'); // Farmer
+      expect(notificationsCall[0].title).toBe('Order Delivered');
+      expect(notificationsCall[0].priority).toBe('HIGH');
+    });
+
+    it('should create activity log when status is updated', async () => {
+      prisma.inputOrder.findUnique = jest.fn().mockResolvedValue(mockInputOrder);
+      prisma.input.findUnique = jest.fn().mockResolvedValue(mockInput);
+      prisma.inputOrder.update = jest.fn().mockResolvedValue({
+        ...mockInputOrder,
+        status: 'COMPLETED',
+        farmer: mockInputOrder.farmer,
+        input: mockInput,
+      });
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      await service.updateInputOrderStatus(
+        'order-1',
+        { status: 'COMPLETED' },
+        'user-1',
+      );
+
+      expect(activityLogService.createActivityLog).toHaveBeenCalledTimes(1);
+      expect(activityLogService.createActivityLog).toHaveBeenCalledWith({
+        userId: 'user-1',
+        action: 'INPUT_ORDER_STATUS_CHANGED',
+        entityType: 'INPUT_ORDER',
+        entityId: mockInputOrder.id,
+        metadata: {
+          orderNumber: mockInputOrder.orderNumber,
+          oldStatus: 'PENDING',
+          newStatus: 'COMPLETED',
+        },
+      });
+    });
+
+    it('should throw BadRequestException when user is not farmer or provider', async () => {
+      prisma.inputOrder.findUnique = jest.fn().mockResolvedValue(mockInputOrder);
+      prisma.input.findUnique = jest.fn().mockResolvedValue(mockInput);
+
+      await expect(
+        service.updateInputOrderStatus('order-1', { status: 'ACCEPTED' }, 'user-3'),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

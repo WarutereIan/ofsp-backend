@@ -504,6 +504,7 @@ enum SourcingProductType {
   FRESH_ROOTS
   PROCESS_GRADE
   PLANTING_VINES
+  OFSP
 }
 
 enum SourcingRequestStatus {

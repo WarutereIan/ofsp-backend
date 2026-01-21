@@ -221,6 +221,44 @@ export class AggregationService {
       },
     });
 
+    // Create inventory item for traceability (per lifecycle requirements)
+    let inventoryItem = null;
+    if (data.batchId) {
+      try {
+        // Check if inventory item already exists for this batch
+        const existingInventory = await this.prisma.inventoryItem.findUnique({
+          where: { batchId: data.batchId },
+        });
+
+        if (!existingInventory) {
+          inventoryItem = await this.prisma.inventoryItem.create({
+            data: {
+              centerId: data.centerId,
+              variety: data.variety,
+              quantity: data.quantity,
+              qualityGrade: data.qualityGrade as any,
+              batchId: data.batchId,
+              stockInDate: new Date(),
+              farmerId: farmerId || undefined,
+              farmerName: farmerName || undefined,
+              stockTransactionId: stockTransaction.id,
+            },
+          });
+        } else {
+          // Update existing inventory if batch already exists
+          inventoryItem = await this.prisma.inventoryItem.update({
+            where: { id: existingInventory.id },
+            data: {
+              quantity: existingInventory.quantity + data.quantity,
+            },
+          });
+        }
+      } catch (error) {
+        console.error('Failed to create inventory item:', error);
+        // Don't fail the transaction if inventory creation fails
+      }
+    }
+
     // Update marketplace order status if stock in is for an order
     if (data.orderId && stockTransaction.order) {
       try {
@@ -234,6 +272,59 @@ export class AggregationService {
       }
     }
 
+    // Create notifications (per lifecycle: manager, buyer, farmer)
+    if (data.orderId && stockTransaction.order) {
+      try {
+        // To Aggregation Manager
+        await this.notificationHelperService.createNotification({
+          userId,
+          type: 'ORDER',
+          title: 'New Stock Received',
+          message: `New stock received for order #${stockTransaction.order.orderNumber}`,
+          priority: 'MEDIUM',
+          entityType: 'ORDER',
+          entityId: data.orderId,
+          actionUrl: `/orders/${data.orderId}`,
+          actionLabel: 'View Order',
+          metadata: { orderNumber: stockTransaction.order.orderNumber, transactionNumber: stockTransaction.transactionNumber },
+        });
+
+        // To Buyer
+        if (stockTransaction.order.buyerId) {
+          await this.notificationHelperService.createNotification({
+            userId: stockTransaction.order.buyerId,
+            type: 'ORDER',
+            title: 'Order Arrived at Center',
+            message: `Order #${stockTransaction.order.orderNumber} has arrived at aggregation center`,
+            priority: 'MEDIUM',
+            entityType: 'ORDER',
+            entityId: data.orderId,
+            actionUrl: `/orders/${data.orderId}`,
+            actionLabel: 'View Order',
+            metadata: { orderNumber: stockTransaction.order.orderNumber },
+          });
+        }
+
+        // To Farmer
+        if (farmerId) {
+          await this.notificationHelperService.createNotification({
+            userId: farmerId,
+            type: 'ORDER',
+            title: 'Produce Received',
+            message: `Your produce for order #${stockTransaction.order.orderNumber} has been received at center`,
+            priority: 'MEDIUM',
+            entityType: 'ORDER',
+            entityId: data.orderId,
+            actionUrl: `/orders/${data.orderId}`,
+            actionLabel: 'View Order',
+            metadata: { orderNumber: stockTransaction.order.orderNumber },
+          });
+        }
+      } catch (error) {
+        console.error('Failed to create notifications:', error);
+      }
+    }
+
     // Create activity log
     await this.activityLogService.createActivityLog({
       userId,
@@ -244,9 +335,12 @@ export class AggregationService {
         transactionNumber: stockTransaction.transactionNumber,
         orderId: data.orderId,
         centerId: data.centerId,
+        inventoryItemId: inventoryItem?.id,
+        batchId: data.batchId,
       },
     });
 
+    // Return stock transaction (inventoryItem is created but not included in response to maintain API compatibility)
     return stockTransaction;
   }
 
@@ -290,6 +384,33 @@ export class AggregationService {
       },
     });
 
+    // Update inventory item quantity if batchId is provided
+    if (data.batchId) {
+      try {
+        const inventoryItem = await this.prisma.inventoryItem.findUnique({
+          where: { batchId: data.batchId },
+        });
+
+        if (inventoryItem) {
+          const newQuantity = inventoryItem.quantity - data.quantity;
+          if (newQuantity <= 0) {
+            // Delete inventory item if quantity is depleted
+            await this.prisma.inventoryItem.delete({
+              where: { id: inventoryItem.id },
+            });
+          } else {
+            // Update inventory item quantity
+            await this.prisma.inventoryItem.update({
+              where: { id: inventoryItem.id },
+              data: { quantity: newQuantity },
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to update inventory item:', error);
+      }
+    }
+
     // Update marketplace order status if stock out is for an order
     if (data.orderId && stockTransaction.order) {
       try {
@@ -300,6 +421,31 @@ export class AggregationService {
         );
       } catch (error) {
         console.error('Failed to update order status:', error);
+      }
+    }
+
+    // Create notifications (per lifecycle: buyer, transport provider)
+    if (data.orderId && stockTransaction.order) {
+      try {
+        // To Buyer
+        if (stockTransaction.order.buyerId) {
+          await this.notificationHelperService.createNotification({
+            userId: stockTransaction.order.buyerId,
+            type: 'ORDER',
+            title: 'Order Out for Delivery',
+            message: `Order #${stockTransaction.order.orderNumber} is out for delivery`,
+            priority: 'MEDIUM',
+            entityType: 'ORDER',
+            entityId: data.orderId,
+            actionUrl: `/orders/${data.orderId}`,
+            actionLabel: 'View Order',
+            metadata: { orderNumber: stockTransaction.order.orderNumber },
+          });
+        }
+
+        // Note: Transport provider notification would be created when transport request is created
+      } catch (error) {
+        console.error('Failed to create notifications:', error);
       }
     }
 
@@ -425,6 +571,9 @@ export class AggregationService {
         qualityGrade: data.qualityGrade as any,
         qualityScore: data.qualityScore,
         colorScore: data.colorScore,
+        damageScore: data.damageScore,
+        sizeScore: data.sizeScore,
+        dryMatterContent: data.dryMatterContent,
         approved,
         rejectionReason: approved ? null : 'Quality score below threshold',
         farmerId,
@@ -468,7 +617,7 @@ export class AggregationService {
           where: { id: data.orderId },
           data: {
             qualityScore: data.qualityScore,
-            qualityFeedback: approved ? 'Quality approved' : qualityCheck.rejectionReason || 'Quality rejected',
+            qualityFeedback: approved ? 'Quality approved' : (qualityCheck.rejectionReason || 'Quality rejected'),
           },
         });
       } catch (error) {

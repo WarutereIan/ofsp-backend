@@ -49,6 +49,28 @@ export class InputController {
     });
   }
 
+  @Get('stats')
+  @ApiOperation({ summary: 'Get input statistics' })
+  async getInputStats(@Query('providerId') providerId?: string) {
+    return this.inputService.getInputStats(providerId);
+  }
+
+  @Get('customers')
+  @ApiOperation({ summary: 'Get all input customers' })
+  async getInputCustomers(
+    @Query('providerId') providerId?: string,
+    @Query('search') search?: string,
+    @Query('minOrders') minOrders?: number,
+    @Query('minSpent') minSpent?: number,
+  ) {
+    return this.inputService.getInputCustomers({
+      providerId,
+      search,
+      minOrders,
+      minSpent,
+    });
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get input product by ID' })
   async getInputById(@Param('id') id: string) {
@@ -131,22 +153,6 @@ export class InputController {
 
   // ============ Input Customers ============
 
-  @Get('customers')
-  @ApiOperation({ summary: 'Get all input customers' })
-  async getInputCustomers(
-    @Query('providerId') providerId?: string,
-    @Query('search') search?: string,
-    @Query('minOrders') minOrders?: number,
-    @Query('minSpent') minSpent?: number,
-  ) {
-    return this.inputService.getInputCustomers({
-      providerId,
-      search,
-      minOrders,
-      minSpent,
-    });
-  }
-
   @Get('customers/:id')
   @ApiOperation({ summary: 'Get input customer by ID' })
   async getInputCustomerById(
@@ -169,13 +175,5 @@ export class InputController {
   @ApiOperation({ summary: 'Get customer statistics' })
   async getCustomerStats(@Query('providerId') providerId?: string) {
     return this.inputService.getCustomerStats(providerId);
-  }
-
-  // ============ Statistics ============
-
-  @Get('stats')
-  @ApiOperation({ summary: 'Get input statistics' })
-  async getInputStats(@Query('providerId') providerId?: string) {
-    return this.inputService.getInputStats(providerId);
   }
 }

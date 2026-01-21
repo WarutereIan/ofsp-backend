@@ -17,6 +17,18 @@ export class InputService {
     private activityLogService: ActivityLogService,
   ) {}
 
+  // Helper to convert DTO category enum to Prisma enum format
+  private convertCategoryToPrismaEnum(category: string): string {
+    const mapping: Record<string, string> = {
+      'Planting Material': 'PLANTING_MATERIAL',
+      'Fertilizer': 'FERTILIZER',
+      'Soil Amendment': 'SOIL_AMENDMENT',
+      'Tools & Equipment': 'TOOLS_EQUIPMENT',
+      'Training Materials': 'TRAINING_MATERIALS',
+    };
+    return mapping[category] || category.toUpperCase().replace(/\s+/g, '_');
+  }
+
   // ============ Input Products ============
 
   async getInputs(filters?: {
@@ -105,8 +117,8 @@ export class InputService {
       data: {
         ...data,
         providerId,
-        category: data.category as any,
-        status: data.status as any || 'ACTIVE',
+        category: this.convertCategoryToPrismaEnum(data.category) as any,
+        status: (data.status?.toUpperCase() as any) || 'ACTIVE',
       },
       include: {
         provider: {
@@ -129,7 +141,7 @@ export class InputService {
       where: { id },
       data: {
         ...(data.name && { name: data.name }),
-        ...(data.category && { category: data.category as any }),
+        ...(data.category && { category: this.convertCategoryToPrismaEnum(data.category) as any }),
         ...(data.description && { description: data.description }),
         ...(data.price !== undefined && { price: data.price }),
         ...(data.unit && { unit: data.unit }),
@@ -391,19 +403,32 @@ export class InputService {
       },
     });
 
-    // Create notifications
-    const statusMessages: Record<string, { title: string; message: string }> = {
+    // Handle READY_FOR_PICKUP: Create transport request if requiresTransport
+    if (data.status === 'READY_FOR_PICKUP' && updatedOrder.requiresTransport && !updatedOrder.transportRequestId) {
+      // Note: Transport request creation would typically be handled by the transport service
+      // This is a placeholder - in a full implementation, you would inject TransportService
+      // and create the transport request here
+      console.log(`Order #${updatedOrder.orderNumber} is ready for pickup with transport required`);
+    }
+
+    // Create notifications (per lifecycle requirements)
+    const statusMessages: Record<string, { title: string; message: string; notifyProvider?: boolean }> = {
       ACCEPTED: {
         title: 'Input Order Accepted',
         message: `Input provider has accepted order #${updatedOrder.orderNumber}`,
+        notifyProvider: true,
       },
       PROCESSING: {
         title: 'Order Being Processed',
         message: `Order #${updatedOrder.orderNumber} is being processed`,
       },
       READY_FOR_PICKUP: {
-        title: 'Order Ready for Pickup',
-        message: `Order #${updatedOrder.orderNumber} is ready for pickup`,
+        title: updatedOrder.requiresTransport 
+          ? 'Order Ready. Delivery Arranged' 
+          : `Order #${updatedOrder.orderNumber} is ready for pickup at ${updatedOrder.input.location}`,
+        message: updatedOrder.requiresTransport
+          ? `Order #${updatedOrder.orderNumber} is ready. Delivery arranged`
+          : `Order #${updatedOrder.orderNumber} is ready for pickup at ${updatedOrder.input.location}`,
       },
       IN_TRANSIT: {
         title: 'Order In Transit',
@@ -411,17 +436,29 @@ export class InputService {
       },
       DELIVERED: {
         title: 'Order Delivered',
-        message: `Order #${updatedOrder.orderNumber} has been delivered`,
+        message: `Input order #${updatedOrder.orderNumber} delivered. Confirm receipt`,
+        notifyProvider: true,
       },
       COMPLETED: {
         title: 'Order Completed',
-        message: `Order #${updatedOrder.orderNumber} completed`,
+        message: `Input order #${updatedOrder.orderNumber} completed`,
+        notifyProvider: true,
+      },
+      REJECTED: {
+        title: 'Order Rejected',
+        message: `Input order #${updatedOrder.orderNumber} has been rejected`,
+        notifyProvider: true,
+      },
+      CANCELLED: {
+        title: 'Order Cancelled',
+        message: `Input order #${updatedOrder.orderNumber} has been cancelled`,
+        notifyProvider: true,
       },
     };
 
     const statusInfo = statusMessages[data.status];
     if (statusInfo) {
-      await this.notificationHelperService.createNotifications([
+      const notifications = [
         {
           userId: updatedOrder.farmerId,
           type: 'ORDER',
@@ -434,7 +471,37 @@ export class InputService {
           actionLabel: 'View Order',
           metadata: { orderNumber: updatedOrder.orderNumber, status: data.status },
         },
-      ]);
+      ];
+
+      // Add notification to input provider for certain statuses (per lifecycle)
+      if (statusInfo.notifyProvider) {
+        notifications.push({
+          userId: input.providerId,
+          type: 'ORDER',
+          title: data.status === 'ACCEPTED' 
+            ? 'Order Accepted. Process Payment'
+            : data.status === 'DELIVERED'
+            ? 'Order Delivered Successfully'
+            : data.status === 'COMPLETED'
+            ? `Order #${updatedOrder.orderNumber} completed. Payment received`
+            : statusInfo.title,
+          message: data.status === 'ACCEPTED'
+            ? `Order #${updatedOrder.orderNumber} accepted. Process payment`
+            : data.status === 'DELIVERED'
+            ? `Order #${updatedOrder.orderNumber} delivered successfully`
+            : data.status === 'COMPLETED'
+            ? `Order #${updatedOrder.orderNumber} completed. Payment received`
+            : statusInfo.message,
+          priority: ['DELIVERED', 'COMPLETED'].includes(data.status) ? 'HIGH' : 'MEDIUM',
+          entityType: 'INPUT_ORDER',
+          entityId: updatedOrder.id,
+          actionUrl: `/inputs/orders/${updatedOrder.id}`,
+          actionLabel: 'View Order',
+          metadata: { orderNumber: updatedOrder.orderNumber, status: data.status },
+        });
+      }
+
+      await this.notificationHelperService.createNotifications(notifications);
     }
 
     // Create activity log
@@ -464,7 +531,7 @@ export class InputService {
     const where: any = {};
 
     if (filters?.providerId) {
-      where.orders = {
+      where.inputOrders = {
         some: {
           input: {
             providerId: filters.providerId,
@@ -514,9 +581,11 @@ export class InputService {
         const category = order.input.category;
         categoryCounts[category] = (categoryCounts[category] || 0) + 1;
       });
-      const favoriteCategory = Object.keys(categoryCounts).reduce((a, b) =>
-        categoryCounts[a] > categoryCounts[b] ? a : b,
-      );
+      const favoriteCategory = Object.keys(categoryCounts).length > 0
+        ? Object.keys(categoryCounts).reduce((a, b) =>
+            categoryCounts[a] > categoryCounts[b] ? a : b,
+          )
+        : null;
 
       return {
         id: customer.id,

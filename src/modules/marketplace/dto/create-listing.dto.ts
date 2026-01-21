@@ -2,8 +2,8 @@ import { IsString, IsNumber, IsEnum, IsOptional, IsArray, Min } from 'class-vali
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateListingDto {
-  @ApiProperty({ enum: ['Kenya', 'SPK004', 'Kakamega', 'Kabode', 'Other'] })
-  @IsEnum(['Kenya', 'SPK004', 'Kakamega', 'Kabode', 'Other'])
+  @ApiProperty({ enum: ['KENYA', 'SPK004', 'KAKAMEGA', 'KABODE', 'OTHER'] })
+  @IsEnum(['KENYA', 'SPK004', 'KAKAMEGA', 'KABODE', 'OTHER'])
   variety: string;
 
   @ApiProperty()

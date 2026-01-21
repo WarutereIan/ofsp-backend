@@ -2,9 +2,10 @@ import { IsString, IsNumber, IsDateString, IsOptional, Min } from 'class-validat
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateSupplierOfferDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  sourcingRequestId: string;
+  sourcingRequestId?: string; // Optional - comes from path parameter
 
   @ApiProperty()
   @IsNumber()

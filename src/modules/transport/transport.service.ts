@@ -153,7 +153,17 @@ export class TransportService {
     const newStatus = data.status;
 
     // Verify user has permission
-    if (request.providerId && request.providerId !== userId && request.requesterId !== userId) {
+    // Allow: requester or assigned provider
+    const isRequester = request.requesterId === userId;
+    const isAssignedProvider = request.providerId === userId;
+    
+    // If no provider assigned yet, only requester can update (except for accept action which is handled separately)
+    if (!request.providerId && !isRequester) {
+      throw new BadRequestException('Only the requester can update unassigned transport requests');
+    }
+    
+    // If provider is assigned, only requester or assigned provider can update
+    if (request.providerId && !isRequester && !isAssignedProvider) {
       throw new BadRequestException('You can only update your own transport requests');
     }
 
@@ -165,10 +175,10 @@ export class TransportService {
     // Set timestamps based on status
     if ((newStatus === 'IN_TRANSIT_PICKUP' || newStatus === 'IN_TRANSIT_DELIVERY') && 
         oldStatus !== 'IN_TRANSIT_PICKUP' && oldStatus !== 'IN_TRANSIT_DELIVERY') {
-      updateData.pickupAt = new Date();
+      updateData.actualPickup = new Date();
     }
     if (newStatus === 'DELIVERED' && oldStatus !== 'DELIVERED') {
-      updateData.deliveredAt = new Date();
+      updateData.actualDelivery = new Date();
     }
 
     const updatedRequest = await this.prisma.transportRequest.update({
@@ -218,7 +228,9 @@ export class TransportService {
           );
         }
       } catch (error) {
-        console.error('Failed to update order status:', error);
+        console.error('Failed to update order status for PRODUCE_DELIVERY:', error);
+        // Don't re-throw - allow transport status to update even if order status update fails
+        // This prevents transport delivery from being blocked by order status validation issues
       }
     }
 
@@ -420,6 +432,7 @@ export class TransportService {
       where: { id: slotId },
       include: {
         bookings: true,
+        schedule: true,
       },
     });
 
@@ -427,26 +440,60 @@ export class TransportService {
       throw new NotFoundException(`Pickup Slot with ID ${slotId} not found`);
     }
 
-    // Check capacity
+    // Check slot capacity
     const totalBooked = slot.bookings.reduce((sum, b) => sum + b.quantity, 0);
     if (totalBooked + data.quantity > slot.capacity) {
       throw new BadRequestException('Insufficient capacity in this slot');
     }
 
-    return this.prisma.pickupSlotBooking.create({
-      data: {
-        slotId,
-        scheduleId: slot.scheduleId,
-        farmerId,
-        quantity: data.quantity,
-        location: data.location,
-        coordinates: data.coordinates,
-        contactPhone: data.contactPhone,
-        notes: data.notes,
-        variety: data.variety,
-        qualityGrade: data.qualityGrade as any,
-        photos: data.photos || [],
-      },
+    // Check schedule capacity
+    if (slot.schedule.usedCapacity + data.quantity > slot.schedule.totalCapacity) {
+      throw new BadRequestException('Insufficient capacity in schedule');
+    }
+
+    // Create booking and update capacities in a transaction
+    const booking = await this.prisma.$transaction(async (tx) => {
+      // Create booking
+      const newBooking = await tx.pickupSlotBooking.create({
+        data: {
+          slotId,
+          scheduleId: slot.scheduleId,
+          farmerId,
+          quantity: data.quantity,
+          location: data.location,
+          coordinates: data.coordinates,
+          contactPhone: data.contactPhone,
+          notes: data.notes,
+          variety: data.variety,
+          qualityGrade: data.qualityGrade as any,
+          photos: data.photos || [],
+        },
+      });
+
+      // Update slot capacity
+      await tx.pickupSlot.update({
+        where: { id: slotId },
+        data: {
+          usedCapacity: { increment: data.quantity },
+          availableCapacity: { decrement: data.quantity },
+          status: slot.capacity - totalBooked - data.quantity <= 0 ? 'FULL' : 'BOOKED',
+        },
+      });
+
+      // Update schedule capacity
+      await tx.farmPickupSchedule.update({
+        where: { id: slot.scheduleId },
+        data: {
+          usedCapacity: { increment: data.quantity },
+          availableCapacity: { decrement: data.quantity },
+        },
+      });
+
+      return newBooking;
+    });
+
+    return this.prisma.pickupSlotBooking.findUnique({
+      where: { id: booking.id },
       include: {
         slot: {
           include: {
@@ -501,7 +548,10 @@ export class TransportService {
       this.prisma.transportRequest.count({
         where: {
           ...where,
-          status: 'IN_TRANSIT' as any,
+          OR: [
+            { status: 'IN_TRANSIT_PICKUP' as any },
+            { status: 'IN_TRANSIT_DELIVERY' as any },
+          ],
         },
       }),
     ]);

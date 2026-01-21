@@ -90,7 +90,7 @@ export class AggregationController {
     @Body() data: CreateStockTransactionDto,
     @Request() req: any,
   ) {
-    return this.aggregationService.createStockIn(data, req.user.userId);
+    return this.aggregationService.createStockIn(data, req.user.id);
   }
 
   @Post('stock-out')
@@ -99,7 +99,7 @@ export class AggregationController {
     @Body() data: CreateStockTransactionDto,
     @Request() req: any,
   ) {
-    return this.aggregationService.createStockOut(data, req.user.userId);
+    return this.aggregationService.createStockOut(data, req.user.id);
   }
 
   // ============ Inventory ============
@@ -132,7 +132,7 @@ export class AggregationController {
     @Body() data: CreateQualityCheckDto,
     @Request() req: any,
   ) {
-    return this.aggregationService.createQualityCheck(data, req.user.userId);
+    return this.aggregationService.createQualityCheck(data, req.user.id);
   }
 
   // ============ Wastage ============
@@ -159,7 +159,7 @@ export class AggregationController {
     @Body() data: CreateWastageEntryDto,
     @Request() req: any,
   ) {
-    return this.aggregationService.createWastageEntry(data, req.user.userId);
+    return this.aggregationService.createWastageEntry(data, req.user.id);
   }
 
   // ============ Statistics ============

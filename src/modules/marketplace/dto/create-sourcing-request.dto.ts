@@ -2,14 +2,29 @@ import { IsString, IsNumber, IsEnum, IsDateString, IsOptional, Min } from 'class
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateSourcingRequestDto {
-  @ApiProperty({ enum: ['Kenya', 'SPK004', 'Kakamega', 'Kabode', 'Other'] })
-  @IsEnum(['Kenya', 'SPK004', 'Kakamega', 'Kabode', 'Other'])
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  title?: string; // Optional - will be auto-generated if not provided
+
+  @ApiProperty({ enum: ['FRESH_ROOTS', 'PROCESS_GRADE', 'PLANTING_VINES', 'OFSP'] })
+  @IsEnum(['FRESH_ROOTS', 'PROCESS_GRADE', 'PLANTING_VINES', 'OFSP'])
+  productType: string;
+
+  @ApiProperty({ enum: ['KENYA', 'SPK004', 'KAKAMEGA', 'KABODE', 'OTHER'] })
+  @IsEnum(['KENYA', 'SPK004', 'KAKAMEGA', 'KABODE', 'OTHER'])
   variety: string;
 
   @ApiProperty()
   @IsNumber()
   @Min(0)
   quantity: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @IsEnum(['kg', 'tons', 'units'])
+  unit?: string; // Optional - defaults to 'kg'
 
   @ApiProperty({ enum: ['A', 'B', 'C'] })
   @IsEnum(['A', 'B', 'C'])

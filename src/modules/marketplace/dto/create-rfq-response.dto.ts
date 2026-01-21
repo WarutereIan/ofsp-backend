@@ -2,9 +2,10 @@ import { IsString, IsNumber, IsDateString, IsOptional, Min } from 'class-validat
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateRFQResponseDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  rfqId: string;
+  rfqId?: string; // Optional - comes from path parameter
 
   @ApiProperty()
   @IsNumber()

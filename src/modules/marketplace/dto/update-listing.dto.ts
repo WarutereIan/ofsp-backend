@@ -4,7 +4,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 export class UpdateListingDto {
   @ApiPropertyOptional()
   @IsOptional()
-  @IsEnum(['Kenya', 'SPK004', 'Kakamega', 'Kabode', 'Other'])
+  @IsEnum(['KENYA', 'SPK004', 'KAKAMEGA', 'KABODE', 'OTHER'])
   variety?: string;
 
   @ApiPropertyOptional()

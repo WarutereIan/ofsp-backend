@@ -11,8 +11,8 @@ export class CreateOrderDto {
   @IsString()
   farmerId: string;
 
-  @ApiProperty({ enum: ['Kenya', 'SPK004', 'Kakamega', 'Kabode', 'Other'] })
-  @IsEnum(['Kenya', 'SPK004', 'Kakamega', 'Kabode', 'Other'])
+  @ApiProperty({ enum: ['KENYA', 'SPK004', 'KAKAMEGA', 'KABODE', 'OTHER'] })
+  @IsEnum(['KENYA', 'SPK004', 'KAKAMEGA', 'KABODE', 'OTHER'])
   variety: string;
 
   @ApiProperty()

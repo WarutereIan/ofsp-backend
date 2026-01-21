@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { MarketplaceService } from './marketplace.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { NotificationHelperService } from '../../common/services/notification.service';
+import { ActivityLogService } from '../../common/services/activity-log.service';
 import {
   mockPrismaService,
   mockListing,
@@ -17,6 +19,24 @@ import {
 describe('MarketplaceService', () => {
   let service: MarketplaceService;
   let prisma: jest.Mocked<PrismaService>;
+  let notificationHelperService: jest.Mocked<NotificationHelperService>;
+  let activityLogService: jest.Mocked<ActivityLogService>;
+
+  const mockNotificationHelperService = {
+    createNotification: jest.fn(),
+    createNotifications: jest.fn(),
+    notifyOrderPlaced: jest.fn(),
+    notifyOrderStatusChange: jest.fn(),
+  };
+
+  const mockActivityLogService = {
+    createActivityLog: jest.fn(),
+    createActivityLogs: jest.fn(),
+    logOrderCreated: jest.fn(),
+    logOrderStatusChange: jest.fn(),
+    logPaymentCreated: jest.fn(),
+    logTransportCreated: jest.fn(),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -26,16 +46,45 @@ describe('MarketplaceService', () => {
           provide: PrismaService,
           useValue: mockPrismaService,
         },
+        {
+          provide: NotificationHelperService,
+          useValue: mockNotificationHelperService,
+        },
+        {
+          provide: ActivityLogService,
+          useValue: mockActivityLogService,
+        },
       ],
     }).compile();
 
     service = module.get<MarketplaceService>(MarketplaceService);
     prisma = module.get(PrismaService);
+    notificationHelperService = module.get(NotificationHelperService);
+    activityLogService = module.get(ActivityLogService);
   });
 
   afterEach(() => {
     jest.clearAllMocks();
   });
+
+  // Mock user data for createOrder tests
+  const mockBuyer = {
+    id: 'user-2',
+    email: 'buyer@example.com',
+    profile: {
+      firstName: 'Buyer',
+      lastName: 'Test',
+    },
+  };
+
+  const mockFarmer = {
+    id: 'user-1',
+    email: 'farmer@example.com',
+    profile: {
+      firstName: 'Farmer',
+      lastName: 'Test',
+    },
+  };
 
   describe('getListings', () => {
     it('should return all listings without filters', async () => {
@@ -187,7 +236,7 @@ describe('MarketplaceService', () => {
     it('should create an order successfully', async () => {
       const orderData = {
         farmerId: 'user-1',
-        variety: 'Kenya',
+        variety: 'KENYA',
         quantity: 50,
         qualityGrade: 'A',
         pricePerKg: 50,
@@ -199,22 +248,253 @@ describe('MarketplaceService', () => {
       prisma.$queryRaw = jest
         .fn()
         .mockResolvedValue([{ generate_order_number: 'ORD-20250121-000001' }]);
-      prisma.marketplaceOrder.create = jest.fn().mockResolvedValue(mockOrder);
+      prisma.user.findUnique = jest
+        .fn()
+        .mockResolvedValueOnce(mockBuyer)
+        .mockResolvedValueOnce(mockFarmer);
+      prisma.marketplaceOrder.create = jest.fn().mockResolvedValue({
+        ...mockOrder,
+        batchId: 'BATCH-20250121-120000-ABC123',
+        qrCode: 'QR-BATCH-20250121-120000-ABC123',
+      });
+      notificationHelperService.notifyOrderPlaced.mockResolvedValue([]);
+      activityLogService.logOrderCreated.mockResolvedValue({} as any);
 
       const result = await service.createOrder(orderData, 'user-2');
 
-      expect(result).toEqual(mockOrder);
+      expect(result).toBeDefined();
       expect(prisma.marketplaceOrder.create).toHaveBeenCalled();
+      expect(prisma.marketplaceOrder.create.mock.calls[0][0].data.batchId).toBeDefined();
+      expect(prisma.marketplaceOrder.create.mock.calls[0][0].data.qrCode).toBeDefined();
+      expect(prisma.marketplaceOrder.create.mock.calls[0][0].data.qrCode).toMatch(/^QR-BATCH-/);
+    });
+
+    it('should generate batchId and QR code for traceability', async () => {
+      const orderData = {
+        farmerId: 'user-1',
+        variety: 'KENYA',
+        quantity: 50,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        deliveryAddress: '123 Main St',
+        deliveryCounty: 'Nairobi',
+      };
+
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_order_number: 'ORD-20250121-000001' }]);
+      prisma.user.findUnique = jest
+        .fn()
+        .mockResolvedValueOnce(mockBuyer)
+        .mockResolvedValueOnce(mockFarmer);
+      prisma.marketplaceOrder.create = jest.fn().mockResolvedValue(mockOrder);
+      notificationHelperService.notifyOrderPlaced.mockResolvedValue([]);
+      activityLogService.logOrderCreated.mockResolvedValue({} as any);
+
+      await service.createOrder(orderData, 'user-2');
+
+      const createCall = prisma.marketplaceOrder.create.mock.calls[0][0];
+      expect(createCall.data.batchId).toBeDefined();
+      expect(createCall.data.batchId).toMatch(/^BATCH-\d{8}-\d{6}-[A-F0-9]{6}$/);
+      expect(createCall.data.qrCode).toBeDefined();
+      expect(createCall.data.qrCode).toBe(`QR-${createCall.data.batchId}`);
+    });
+
+    it('should create notifications for farmer and buyer', async () => {
+      const orderData = {
+        farmerId: 'user-1',
+        variety: 'KENYA',
+        quantity: 50,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        deliveryAddress: '123 Main St',
+        deliveryCounty: 'Nairobi',
+      };
+
+      const createdOrder = {
+        ...mockOrder,
+        id: 'order-1',
+        orderNumber: 'ORD-001',
+        buyerId: 'user-2',
+        farmerId: 'user-1',
+        buyer: mockBuyer,
+        farmer: mockFarmer,
+      };
+
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_order_number: 'ORD-20250121-000001' }]);
+      prisma.user.findUnique = jest
+        .fn()
+        .mockResolvedValueOnce(mockBuyer)
+        .mockResolvedValueOnce(mockFarmer);
+      prisma.marketplaceOrder.create = jest.fn().mockResolvedValue(createdOrder);
+      notificationHelperService.notifyOrderPlaced.mockResolvedValue([]);
+      activityLogService.logOrderCreated.mockResolvedValue({} as any);
+
+      await service.createOrder(orderData, 'user-2');
+
+      expect(notificationHelperService.notifyOrderPlaced).toHaveBeenCalledWith(
+        createdOrder,
+        mockBuyer,
+        mockFarmer,
+      );
+    });
+
+    it('should create activity logs for buyer and farmer', async () => {
+      const orderData = {
+        farmerId: 'user-1',
+        variety: 'KENYA',
+        quantity: 50,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        deliveryAddress: '123 Main St',
+        deliveryCounty: 'Nairobi',
+      };
+
+      const createdOrder = {
+        ...mockOrder,
+        id: 'order-1',
+        orderNumber: 'ORD-001',
+        buyerId: 'user-2',
+        farmerId: 'user-1',
+      };
+
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_order_number: 'ORD-20250121-000001' }]);
+      prisma.user.findUnique = jest
+        .fn()
+        .mockResolvedValueOnce(mockBuyer)
+        .mockResolvedValueOnce(mockFarmer);
+      prisma.marketplaceOrder.create = jest.fn().mockResolvedValue(createdOrder);
+      notificationHelperService.notifyOrderPlaced.mockResolvedValue([]);
+      activityLogService.logOrderCreated.mockResolvedValue({} as any);
+
+      await service.createOrder(orderData, 'user-2');
+
+      expect(activityLogService.logOrderCreated).toHaveBeenCalledTimes(2);
+      expect(activityLogService.logOrderCreated).toHaveBeenCalledWith(
+        createdOrder,
+        'user-2',
+        { source: 'marketplace' },
+      );
+      expect(activityLogService.logOrderCreated).toHaveBeenCalledWith(
+        createdOrder,
+        'user-1',
+        { source: 'marketplace' },
+      );
+    });
+
+    it('should update negotiation status when order created from negotiation', async () => {
+      const orderData = {
+        farmerId: 'user-1',
+        variety: 'KENYA',
+        quantity: 50,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        deliveryAddress: '123 Main St',
+        deliveryCounty: 'Nairobi',
+        negotiationId: 'negotiation-1',
+      };
+
+      const createdOrder = {
+        ...mockOrder,
+        id: 'order-1',
+        buyerId: 'user-2',
+        farmerId: 'user-1',
+        buyer: mockBuyer,
+        farmer: mockFarmer,
+      };
+
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_order_number: 'ORD-20250121-000001' }]);
+      prisma.user.findUnique = jest
+        .fn()
+        .mockResolvedValueOnce(mockBuyer)
+        .mockResolvedValueOnce(mockFarmer);
+      prisma.marketplaceOrder.create = jest.fn().mockResolvedValue(createdOrder);
+      prisma.negotiation.update = jest.fn().mockResolvedValue({
+        ...mockNegotiation,
+        status: 'CONVERTED',
+        orderId: createdOrder.id,
+      });
+      notificationHelperService.notifyOrderPlaced.mockResolvedValue([]);
+      activityLogService.logOrderCreated.mockResolvedValue({} as any);
+
+      await service.createOrder(orderData, 'user-2');
+
+      expect(prisma.negotiation.update).toHaveBeenCalledWith({
+        where: { id: 'negotiation-1' },
+        data: {
+          status: 'CONVERTED',
+          orderId: createdOrder.id,
+        },
+      });
+    });
+
+    it('should update RFQ response status when order created from RFQ response', async () => {
+      const orderData = {
+        farmerId: 'user-1',
+        variety: 'KENYA',
+        quantity: 50,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        deliveryAddress: '123 Main St',
+        deliveryCounty: 'Nairobi',
+        rfqResponseId: 'rfq-response-1',
+      };
+
+      const createdOrder = {
+        ...mockOrder,
+        id: 'order-1',
+        buyerId: 'user-2',
+        farmerId: 'user-1',
+        buyer: mockBuyer,
+        farmer: mockFarmer,
+      };
+
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_order_number: 'ORD-20250121-000001' }]);
+      prisma.user.findUnique = jest
+        .fn()
+        .mockResolvedValueOnce(mockBuyer)
+        .mockResolvedValueOnce(mockFarmer);
+      prisma.marketplaceOrder.create = jest.fn().mockResolvedValue(createdOrder);
+      prisma.rFQResponse.update = jest.fn().mockResolvedValue({
+        ...mockRFQResponse,
+        status: 'AWARDED',
+      });
+      notificationHelperService.notifyOrderPlaced.mockResolvedValue([]);
+      activityLogService.logOrderCreated.mockResolvedValue({} as any);
+
+      await service.createOrder(orderData, 'user-2');
+
+      expect(prisma.rFQResponse.update).toHaveBeenCalledWith({
+        where: { id: 'rfq-response-1' },
+        data: { status: 'AWARDED' },
+      });
     });
   });
 
   describe('updateOrderStatus', () => {
     it('should update order status when user is buyer or farmer', async () => {
-      prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(mockOrder);
-      prisma.marketplaceOrder.update = jest.fn().mockResolvedValue({
+      const orderWithStatusHistory = {
         ...mockOrder,
+        statusHistory: [],
+      };
+      prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(orderWithStatusHistory);
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ role: 'BUYER' });
+      prisma.marketplaceOrder.update = jest.fn().mockResolvedValue({
+        ...orderWithStatusHistory,
         status: 'ORDER_ACCEPTED',
+        buyer: mockBuyer,
+        farmer: mockFarmer,
       });
+      notificationHelperService.notifyOrderStatusChange.mockResolvedValue([]);
+      activityLogService.logOrderStatusChange.mockResolvedValue({} as any);
 
       const result = await service.updateOrderStatus(
         'order-1',
@@ -225,12 +505,187 @@ describe('MarketplaceService', () => {
       expect(result.status).toBe('ORDER_ACCEPTED');
     });
 
-    it('should throw BadRequestException when user is not buyer or farmer', async () => {
+    it('should throw BadRequestException when user is not buyer or farmer or system user', async () => {
       prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(mockOrder);
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ role: 'FARMER' });
 
       await expect(
         service.updateOrderStatus('order-1', { status: 'ORDER_ACCEPTED' }, 'user-3'),
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should validate status transition', async () => {
+      const orderWithStatusHistory = {
+        ...mockOrder,
+        status: 'ORDER_PLACED',
+        statusHistory: [],
+      };
+      prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(orderWithStatusHistory);
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ role: 'BUYER' });
+
+      await expect(
+        service.updateOrderStatus('order-1', { status: 'DELIVERED' }, 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should allow system users to bypass status transition validation', async () => {
+      const orderWithStatusHistory = {
+        ...mockOrder,
+        status: 'ORDER_PLACED',
+        statusHistory: [],
+      };
+      prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(orderWithStatusHistory);
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ role: 'AGGREGATION_MANAGER' });
+      prisma.marketplaceOrder.update = jest.fn().mockResolvedValue({
+        ...orderWithStatusHistory,
+        status: 'AT_AGGREGATION',
+        buyer: mockBuyer,
+        farmer: mockFarmer,
+      });
+      notificationHelperService.notifyOrderStatusChange.mockResolvedValue([]);
+      activityLogService.logOrderStatusChange.mockResolvedValue({} as any);
+
+      const result = await service.updateOrderStatus(
+        'order-1',
+        { status: 'AT_AGGREGATION' },
+        'user-3',
+      );
+
+      expect(result.status).toBe('AT_AGGREGATION');
+    });
+
+    it('should update status history', async () => {
+      const orderWithStatusHistory = {
+        ...mockOrder,
+        status: 'ORDER_PLACED',
+        statusHistory: [
+          { status: 'ORDER_PLACED', timestamp: '2025-01-21T10:00:00Z', changedBy: 'user-2' },
+        ],
+      };
+      prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(orderWithStatusHistory);
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ role: 'BUYER' });
+      prisma.marketplaceOrder.update = jest.fn().mockResolvedValue({
+        ...orderWithStatusHistory,
+        status: 'ORDER_ACCEPTED',
+        buyer: mockBuyer,
+        farmer: mockFarmer,
+      });
+      notificationHelperService.notifyOrderStatusChange.mockResolvedValue([]);
+      activityLogService.logOrderStatusChange.mockResolvedValue({} as any);
+
+      await service.updateOrderStatus('order-1', { status: 'ORDER_ACCEPTED' }, 'user-2');
+
+      const updateCall = prisma.marketplaceOrder.update.mock.calls[0][0];
+      expect(updateCall.data.statusHistory).toBeDefined();
+      expect(Array.isArray(updateCall.data.statusHistory)).toBe(true);
+      expect(updateCall.data.statusHistory.length).toBe(2);
+      expect(updateCall.data.statusHistory[1].status).toBe('ORDER_ACCEPTED');
+      expect(updateCall.data.statusHistory[1].changedBy).toBe('user-2');
+    });
+
+    it('should set deliveredAt when status is DELIVERED', async () => {
+      const orderWithStatusHistory = {
+        ...mockOrder,
+        status: 'OUT_FOR_DELIVERY',
+        statusHistory: [],
+      };
+      prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(orderWithStatusHistory);
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ role: 'BUYER' });
+      prisma.marketplaceOrder.update = jest.fn().mockResolvedValue({
+        ...orderWithStatusHistory,
+        status: 'DELIVERED',
+        deliveredAt: new Date(),
+        buyer: mockBuyer,
+        farmer: mockFarmer,
+      });
+      notificationHelperService.notifyOrderStatusChange.mockResolvedValue([]);
+      activityLogService.logOrderStatusChange.mockResolvedValue({} as any);
+
+      await service.updateOrderStatus('order-1', { status: 'DELIVERED' }, 'user-2');
+
+      const updateCall = prisma.marketplaceOrder.update.mock.calls[0][0];
+      expect(updateCall.data.deliveredAt).toBeDefined();
+      expect(updateCall.data.deliveredAt).toBeInstanceOf(Date);
+    });
+
+    it('should set completedAt when status is COMPLETED', async () => {
+      const orderWithStatusHistory = {
+        ...mockOrder,
+        status: 'DELIVERED',
+        statusHistory: [],
+      };
+      prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(orderWithStatusHistory);
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ role: 'BUYER' });
+      prisma.marketplaceOrder.update = jest.fn().mockResolvedValue({
+        ...orderWithStatusHistory,
+        status: 'COMPLETED',
+        completedAt: new Date(),
+        buyer: mockBuyer,
+        farmer: mockFarmer,
+      });
+      notificationHelperService.notifyOrderStatusChange.mockResolvedValue([]);
+      activityLogService.logOrderStatusChange.mockResolvedValue({} as any);
+
+      await service.updateOrderStatus('order-1', { status: 'COMPLETED' }, 'user-2');
+
+      const updateCall = prisma.marketplaceOrder.update.mock.calls[0][0];
+      expect(updateCall.data.completedAt).toBeDefined();
+      expect(updateCall.data.completedAt).toBeInstanceOf(Date);
+    });
+
+    it('should create notifications on status change', async () => {
+      const orderWithStatusHistory = {
+        ...mockOrder,
+        status: 'ORDER_PLACED',
+        statusHistory: [],
+      };
+      const updatedOrder = {
+        ...orderWithStatusHistory,
+        status: 'ORDER_ACCEPTED',
+        buyer: mockBuyer,
+        farmer: mockFarmer,
+      };
+      prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(orderWithStatusHistory);
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ role: 'BUYER' });
+      prisma.marketplaceOrder.update = jest.fn().mockResolvedValue(updatedOrder);
+      notificationHelperService.notifyOrderStatusChange.mockResolvedValue([]);
+      activityLogService.logOrderStatusChange.mockResolvedValue({} as any);
+
+      await service.updateOrderStatus('order-1', { status: 'ORDER_ACCEPTED' }, 'user-2');
+
+      expect(notificationHelperService.notifyOrderStatusChange).toHaveBeenCalledWith(
+        updatedOrder,
+        'ORDER_ACCEPTED',
+        { id: 'user-2' },
+      );
+    });
+
+    it('should create activity log on status change', async () => {
+      const orderWithStatusHistory = {
+        ...mockOrder,
+        status: 'ORDER_PLACED',
+        statusHistory: [],
+      };
+      const updatedOrder = {
+        ...orderWithStatusHistory,
+        status: 'ORDER_ACCEPTED',
+        buyer: mockBuyer,
+        farmer: mockFarmer,
+      };
+      prisma.marketplaceOrder.findUnique = jest.fn().mockResolvedValue(orderWithStatusHistory);
+      prisma.user.findUnique = jest.fn().mockResolvedValue({ role: 'BUYER' });
+      prisma.marketplaceOrder.update = jest.fn().mockResolvedValue(updatedOrder);
+      notificationHelperService.notifyOrderStatusChange.mockResolvedValue([]);
+      activityLogService.logOrderStatusChange.mockResolvedValue({} as any);
+
+      await service.updateOrderStatus('order-1', { status: 'ORDER_ACCEPTED' }, 'user-2');
+
+      expect(activityLogService.logOrderStatusChange).toHaveBeenCalledWith(
+        updatedOrder,
+        'ORDER_PLACED',
+        'ORDER_ACCEPTED',
+        'user-2',
+      );
     });
   });
 

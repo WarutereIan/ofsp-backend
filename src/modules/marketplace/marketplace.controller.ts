@@ -261,6 +261,18 @@ export class MarketplaceController {
     );
   }
 
+  @Put('sourcing-requests/:id/publish')
+  @ApiOperation({ summary: 'Publish a sourcing request' })
+  async publishSourcingRequest(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.marketplaceService.publishSourcingRequest(id, user.id);
+  }
+
+  @Put('sourcing-requests/:id/close')
+  @ApiOperation({ summary: 'Close a sourcing request' })
+  async closeSourcingRequest(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.marketplaceService.closeSourcingRequest(id, user.id);
+  }
+
   @Post('sourcing-requests/:requestId/offers')
   @ApiOperation({ summary: 'Submit supplier offer' })
   async submitSupplierOffer(
