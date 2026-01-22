@@ -583,7 +583,7 @@ describe('MarketplaceService', () => {
       expect(updateCall.data.statusHistory[1].changedBy).toBe('user-2');
     });
 
-    it('should set deliveredAt when status is DELIVERED', async () => {
+    it('should set actualDeliveryDate when status is DELIVERED', async () => {
       const orderWithStatusHistory = {
         ...mockOrder,
         status: 'OUT_FOR_DELIVERY',
@@ -594,7 +594,7 @@ describe('MarketplaceService', () => {
       prisma.marketplaceOrder.update = jest.fn().mockResolvedValue({
         ...orderWithStatusHistory,
         status: 'DELIVERED',
-        deliveredAt: new Date(),
+        actualDeliveryDate: new Date(),
         buyer: mockBuyer,
         farmer: mockFarmer,
       });
@@ -604,8 +604,8 @@ describe('MarketplaceService', () => {
       await service.updateOrderStatus('order-1', { status: 'DELIVERED' }, 'user-2');
 
       const updateCall = prisma.marketplaceOrder.update.mock.calls[0][0];
-      expect(updateCall.data.deliveredAt).toBeDefined();
-      expect(updateCall.data.deliveredAt).toBeInstanceOf(Date);
+      expect(updateCall.data.actualDeliveryDate).toBeDefined();
+      expect(updateCall.data.actualDeliveryDate).toBeInstanceOf(Date);
     });
 
     it('should set completedAt when status is COMPLETED', async () => {
@@ -732,7 +732,12 @@ describe('MarketplaceService', () => {
         deliveryDate: '2025-02-01',
       };
 
-      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(mockRFQ);
+      const futureDate = new Date();
+      futureDate.setDate(futureDate.getDate() + 30); // 30 days in the future
+
+      prisma.rFQ.findUnique = jest
+        .fn()
+        .mockResolvedValue({ ...mockRFQ, quoteDeadline: futureDate });
       prisma.rFQResponse.create = jest.fn().mockResolvedValue(mockRFQResponse);
 
       const result = await service.submitRFQResponse(responseData, 'user-1');
@@ -802,15 +807,71 @@ describe('MarketplaceService', () => {
         deliveryDate: '2025-02-01',
       };
 
+      const futureDate = new Date();
+      futureDate.setDate(futureDate.getDate() + 30); // 30 days in the future
+
       prisma.sourcingRequest.findUnique = jest
         .fn()
-        .mockResolvedValue(mockSourcingRequest);
+        .mockResolvedValue({ 
+          ...mockSourcingRequest, 
+          status: 'OPEN',
+          deadline: futureDate,
+        });
       prisma.supplierOffer.create = jest.fn().mockResolvedValue(mockSupplierOffer);
 
       const result = await service.submitSupplierOffer(offerData, 'user-1');
 
       expect(result).toEqual(mockSupplierOffer);
       expect(prisma.supplierOffer.create).toHaveBeenCalled();
+    });
+
+    it('should reject supplier offer when sourcing request is in DRAFT status', async () => {
+      const offerData = {
+        sourcingRequestId: 'sourcing-1',
+        pricePerKg: 50,
+        notes: 'Can supply',
+        deliveryDate: '2025-02-01',
+      };
+
+      prisma.sourcingRequest.findUnique = jest
+        .fn()
+        .mockResolvedValue({ ...mockSourcingRequest, status: 'DRAFT' });
+
+      await expect(
+        service.submitSupplierOffer(offerData, 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.submitSupplierOffer(offerData, 'user-1'),
+      ).rejects.toThrow('Sourcing request must be open to accept offers');
+      expect(prisma.supplierOffer.create).not.toHaveBeenCalled();
+    });
+
+    it('should reject supplier offer when sourcing request deadline has passed', async () => {
+      const offerData = {
+        sourcingRequestId: 'sourcing-1',
+        pricePerKg: 50,
+        notes: 'Can supply',
+        deliveryDate: '2025-02-01',
+      };
+
+      const pastDate = new Date();
+      pastDate.setDate(pastDate.getDate() - 1); // 1 day in the past
+
+      prisma.sourcingRequest.findUnique = jest
+        .fn()
+        .mockResolvedValue({ 
+          ...mockSourcingRequest, 
+          status: 'OPEN',
+          deadline: pastDate,
+        });
+
+      await expect(
+        service.submitSupplierOffer(offerData, 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.submitSupplierOffer(offerData, 'user-1'),
+      ).rejects.toThrow('Sourcing request deadline has passed');
+      expect(prisma.supplierOffer.create).not.toHaveBeenCalled();
     });
   });
 

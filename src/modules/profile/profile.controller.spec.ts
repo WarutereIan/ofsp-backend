@@ -59,7 +59,12 @@ describe('ProfileController', () => {
       const result = await controller.findAll();
 
       expect(result).toEqual([mockProfile]);
-      expect(service.findAll).toHaveBeenCalledWith();
+      expect(service.findAll).toHaveBeenCalledWith({
+        role: undefined,
+        county: undefined,
+        subcounty: undefined,
+        ward: undefined,
+      });
     });
 
     it('should filter profiles by role', async () => {

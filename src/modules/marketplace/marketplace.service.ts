@@ -38,7 +38,7 @@ export class MarketplaceService {
 
   // Valid status transitions
   private readonly validStatusTransitions: Record<string, string[]> = {
-    ORDER_PLACED: ['ORDER_ACCEPTED', 'ORDER_REJECTED', 'CANCELLED'],
+    ORDER_PLACED: ['ORDER_ACCEPTED', 'PAYMENT_SECURED', 'ORDER_REJECTED', 'CANCELLED'], // Payment can be secured before order acceptance
     ORDER_ACCEPTED: ['PAYMENT_SECURED', 'ORDER_REJECTED', 'CANCELLED'],
     PAYMENT_SECURED: ['IN_TRANSIT', 'CANCELLED'],
     IN_TRANSIT: ['AT_AGGREGATION', 'CANCELLED'],
@@ -809,6 +809,9 @@ export class MarketplaceService {
   }
 
   async submitRFQResponse(data: CreateRFQResponseDto, supplierId: string) {
+    if (!data.rfqId) {
+      throw new BadRequestException('RFQ ID is required');
+    }
     const rfq = await this.getRFQById(data.rfqId);
     
     // Validate RFQ is published
@@ -828,7 +831,7 @@ export class MarketplaceService {
     const [response] = await Promise.all([
       this.prisma.rFQResponse.create({
         data: {
-          rfqId: data.rfqId,
+          rfqId: data.rfqId!,
           supplierId,
           quantity: rfq.quantity,
           quantityUnit: rfq.unit,
@@ -853,7 +856,7 @@ export class MarketplaceService {
       }),
       // Increment totalResponses on RFQ
       this.prisma.rFQ.update({
-        where: { id: data.rfqId },
+        where: { id: data.rfqId! },
         data: {
           totalResponses: {
             increment: 1,
@@ -1198,6 +1201,9 @@ export class MarketplaceService {
   }
 
   async submitSupplierOffer(data: CreateSupplierOfferDto, farmerId: string) {
+    if (!data.sourcingRequestId) {
+      throw new BadRequestException('Sourcing request ID is required');
+    }
     const request = await this.getSourcingRequestById(data.sourcingRequestId);
     
     // Validate request is open
@@ -1212,7 +1218,7 @@ export class MarketplaceService {
 
     const offer = await this.prisma.supplierOffer.create({
       data: {
-        sourcingRequestId: data.sourcingRequestId,
+        sourcingRequestId: data.sourcingRequestId!,
         farmerId,
         quantity: request.quantity,
         quantityUnit: request.unit,
@@ -1529,7 +1535,7 @@ export class MarketplaceService {
           userId: listing.farmerId,
           type: 'NEGOTIATION',
           title: 'New Negotiation Request',
-          message: `New negotiation request from ${buyer.profile?.firstName || buyer.email || 'Buyer'} for ${listing.variety}`,
+          message: `New negotiation request from ${negotiation.buyer?.profile?.firstName || negotiation.buyer?.email || 'Buyer'} for ${listing.variety}`,
           priority: 'MEDIUM',
           entityType: 'NEGOTIATION',
           entityId: negotiation.id,
@@ -1594,7 +1600,7 @@ export class MarketplaceService {
     // Update negotiation if it's a counter offer
     let updatedNegotiation = negotiation;
     if (isCounterOffer) {
-      updatedNegotiation = await this.prisma.negotiation.update({
+      const updated = await this.prisma.negotiation.update({
         where: { id: negotiationId },
         data: {
           status: 'COUNTER_OFFER',
@@ -1603,7 +1609,25 @@ export class MarketplaceService {
           negotiatedTotalAmount: totalAmount,
           lastMessageAt: new Date(),
         },
+        include: {
+          buyer: {
+            include: {
+              profile: true,
+            },
+          },
+          listing: {
+            include: {
+              farmer: {
+                include: {
+                  profile: true,
+                },
+              },
+            },
+          },
+          messages: true,
+        },
       });
+      updatedNegotiation = updated;
     }
 
     const message = await this.prisma.negotiationMessage.create({

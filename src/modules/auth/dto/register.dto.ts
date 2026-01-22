@@ -4,6 +4,7 @@ import {
   IsEnum,
   IsNotEmpty,
   IsObject,
+  IsOptional,
   IsPhoneNumber,
   IsString,
   MinLength,
@@ -28,6 +29,7 @@ class ProfileDto {
   county: string;
 
   @ApiProperty({ example: 'Dagoretti North', required: false })
+  @IsOptional()
   @IsString()
   ward?: string;
 }

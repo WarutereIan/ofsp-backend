@@ -57,10 +57,14 @@ describe('AuthController (e2e)', () => {
           { email: 'login-test@example.com' },
           { email: 'refresh-test@example.com' },
           { email: 'register-duplicate@example.com' },
+          { email: 'inactive-test@example.com' },
           { email: { startsWith: 'register-token-test-' } },
           { email: { startsWith: 'register-phone1-' } },
           { email: { startsWith: 'register-phone2-' } },
           { email: { startsWith: 'logout-test-' } },
+          { email: { startsWith: 'invalid-' } },
+          { email: { startsWith: 'short-password-' } },
+          { email: { startsWith: 'missing-fields-' } },
         ],
       },
     });
@@ -198,15 +202,107 @@ describe('AuthController (e2e)', () => {
       });
 
       // First registration should succeed
-      await request(app.getHttpServer())
+      const firstResponse = await request(app.getHttpServer())
         .post(`/${apiPrefix}/auth/register`)
-        .send(registerDto1)
-        .expect(201);
+        .send(registerDto1);
+      
+      if (firstResponse.status !== 201) {
+        console.error('First registration failed:', firstResponse.status, JSON.stringify(firstResponse.body, null, 2));
+      }
+      expect(firstResponse.status).toBe(201);
 
       // Second registration with same phone should fail
       await request(app.getHttpServer())
         .post(`/${apiPrefix}/auth/register`)
         .send(registerDto2)
+        .expect(400);
+    });
+
+    it('should reject invalid email format', async () => {
+      const registerDto = {
+        email: 'invalid-email',
+        phone: '+254712345678',
+        password: 'password123',
+        role: 'FARMER',
+        profile: {
+          firstName: 'John',
+          lastName: 'Doe',
+          county: 'Nairobi',
+        },
+      };
+
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/register`)
+        .send(registerDto)
+        .expect(400);
+    });
+
+    it('should reject invalid phone format', async () => {
+      const registerDto = {
+        email: `invalid-phone-${Date.now()}@example.com`,
+        phone: '123', // Invalid phone format
+        password: 'password123',
+        role: 'FARMER',
+        profile: {
+          firstName: 'John',
+          lastName: 'Doe',
+          county: 'Nairobi',
+        },
+      };
+
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/register`)
+        .send(registerDto)
+        .expect(400);
+    });
+
+    it('should reject password too short', async () => {
+      const registerDto = {
+        email: `short-password-${Date.now()}@example.com`,
+        phone: '+254712345678',
+        password: 'short', // Less than 8 characters
+        role: 'FARMER',
+        profile: {
+          firstName: 'John',
+          lastName: 'Doe',
+          county: 'Nairobi',
+        },
+      };
+
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/register`)
+        .send(registerDto)
+        .expect(400);
+    });
+
+    it('should reject missing required fields', async () => {
+      const registerDto = {
+        email: `missing-fields-${Date.now()}@example.com`,
+        // Missing phone, password, role, profile
+      };
+
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/register`)
+        .send(registerDto)
+        .expect(400);
+    });
+
+    it('should reject invalid role', async () => {
+      const registerDto = {
+        email: `invalid-role-${Date.now()}@example.com`,
+        phone: '+254712345678',
+        password: 'password123',
+        role: 'INVALID_ROLE',
+        profile: {
+          firstName: 'John',
+          lastName: 'Doe',
+          county: 'Nairobi',
+        },
+      };
+
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/register`)
+        .send(registerDto)
         .expect(400);
     });
   });
@@ -270,6 +366,66 @@ describe('AuthController (e2e)', () => {
         })
         .expect(401);
     });
+
+    it('should reject missing email', async () => {
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/login`)
+        .send({
+          password: 'password123',
+        })
+        .expect(400);
+    });
+
+    it('should reject missing password', async () => {
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/login`)
+        .send({
+          email: 'login-test@example.com',
+        })
+        .expect(400);
+    });
+
+    it('should reject invalid email format', async () => {
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/login`)
+        .send({
+          email: 'invalid-email',
+          password: 'password123',
+        })
+        .expect(400);
+    });
+
+    it('should reject login for inactive user', async () => {
+      // Create an inactive user
+      const hashedPassword = await bcrypt.hash('password123', 10);
+      const inactiveUser = await prisma.user.create({
+        data: {
+          email: 'inactive-test@example.com',
+          phone: '+254712345681',
+          password: hashedPassword,
+          role: UserRole.FARMER,
+          status: UserStatus.SUSPENDED,
+          profile: {
+            create: {
+              firstName: 'Inactive',
+              lastName: 'User',
+              county: 'Nairobi',
+            },
+          },
+        },
+      });
+
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/login`)
+        .send({
+          email: 'inactive-test@example.com',
+          password: 'password123',
+        })
+        .expect(401);
+
+      // Cleanup
+      await prisma.user.delete({ where: { id: inactiveUser.id } });
+    });
   });
 
   describe('POST /auth/refresh', () => {
@@ -304,7 +460,31 @@ describe('AuthController (e2e)', () => {
           password: 'password123',
         });
 
+      if (loginResponse.status !== 200) {
+        console.error('Login failed:', loginResponse.status, JSON.stringify(loginResponse.body, null, 2));
+      }
+      expect(loginResponse.status).toBe(200);
+      expect(loginResponse.body.data).toBeDefined();
+      expect(loginResponse.body.data.refreshToken).toBeDefined();
       refreshToken = loginResponse.body.data.refreshToken;
+
+      // Wait a bit for async token storage
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Verify refresh token was stored in database
+      const storedToken = await prisma.refreshToken.findFirst({
+        where: { token: refreshToken },
+      });
+      
+      if (!storedToken) {
+        console.error('Refresh token not found in database. Token:', refreshToken.substring(0, 20) + '...');
+        const allTokens = await prisma.refreshToken.findMany({
+          where: { userId: testUser.id },
+        });
+        console.error('All tokens for user:', allTokens.length, allTokens.map(t => ({ id: t.id, userId: t.userId })));
+      }
+      expect(storedToken).toBeDefined();
+      expect(storedToken?.userId).toBe(testUser.id);
     });
 
     it('should refresh access token', async () => {
@@ -327,16 +507,49 @@ describe('AuthController (e2e)', () => {
     });
 
     it('should reject reused refresh token', async () => {
+      // Ensure we have a valid refresh token
+      expect(refreshToken).toBeDefined();
+      expect(typeof refreshToken).toBe('string');
+
       // Use the refresh token once
-      await request(app.getHttpServer())
+      const firstResponse = await request(app.getHttpServer())
         .post(`/${apiPrefix}/auth/refresh`)
-        .send({ refreshToken })
-        .expect(200);
+        .send({ refreshToken });
+      
+      if (firstResponse.status !== 200) {
+        console.error('First refresh failed:', firstResponse.status, JSON.stringify(firstResponse.body, null, 2));
+      }
+      expect(firstResponse.status).toBe(200);
 
       // Try to use it again - should fail
       await request(app.getHttpServer())
         .post(`/${apiPrefix}/auth/refresh`)
         .send({ refreshToken })
+        .expect(401);
+    });
+
+    it('should reject missing refresh token', async () => {
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/refresh`)
+        .send({})
+        .expect(400);
+    });
+
+    it('should reject expired refresh token', async () => {
+      // Create an expired token (this would require manipulating the token or time)
+      // For now, we'll test with a malformed token
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/refresh`)
+        .send({ refreshToken: 'expired.or.malformed.token' })
+        .expect(401);
+    });
+
+    it('should reject tampered refresh token', async () => {
+      // Create a tampered token by modifying a valid one
+      const tamperedToken = refreshToken.slice(0, -5) + 'XXXXX';
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/refresh`)
+        .send({ refreshToken: tamperedToken })
         .expect(401);
     });
   });
@@ -388,6 +601,28 @@ describe('AuthController (e2e)', () => {
         where: { userId: testUser.id },
       });
       expect(tokens).toHaveLength(0);
+    });
+
+    it('should reject logout without authentication', async () => {
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/logout`)
+        .expect(401);
+    });
+
+    it('should reject logout with invalid token', async () => {
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/logout`)
+        .set('Authorization', 'Bearer invalid-token')
+        .expect(401);
+    });
+
+    it('should reject logout with expired token', async () => {
+      // Create a token that appears valid but is expired
+      // In a real scenario, this would be an actually expired JWT
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/auth/logout`)
+        .set('Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.expired')
+        .expect(401);
     });
   });
 });

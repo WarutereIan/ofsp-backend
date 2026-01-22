@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PaymentController } from './payment.controller';
 import { PaymentService } from './payment.service';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
 describe('PaymentController', () => {
   let controller: PaymentController;

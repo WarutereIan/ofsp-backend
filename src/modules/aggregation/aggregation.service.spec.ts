@@ -31,10 +31,15 @@ describe('AggregationService', () => {
     inventoryItem: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
     },
     qualityCheck: {
       findMany: jest.fn(),
       create: jest.fn(),
+    },
+    user: {
+      findUnique: jest.fn(),
     },
     wastageEntry: {
       findMany: jest.fn(),
@@ -304,6 +309,12 @@ describe('AggregationService', () => {
         lastName: 'Name',
       };
 
+      const mockCenter = {
+        id: 'center-1',
+        centerType: 'MAIN',
+        name: 'Test Center',
+      };
+
       const mockTransaction = {
         id: 'txn-1',
         transactionNumber: 'STX-20250121-000001',
@@ -311,14 +322,18 @@ describe('AggregationService', () => {
         farmerId: 'farmer-1',
         farmerName: 'Farmer Name',
         order: mockOrder,
+        center: mockCenter,
       };
 
+      mockPrismaService.aggregationCenter.findUnique.mockResolvedValue(mockCenter);
       mockPrismaService.marketplaceOrder.findUnique.mockResolvedValue(mockOrder);
       mockPrismaService.profile.findUnique.mockResolvedValue(mockProfile);
       mockPrismaService.$queryRaw.mockResolvedValue([
         { generate_stock_transaction_number: 'STX-20250121-000001' },
       ]);
       mockPrismaService.stockTransaction.create.mockResolvedValue(mockTransaction);
+      mockPrismaService.inventoryItem.findUnique.mockResolvedValue(null);
+      mockPrismaService.inventoryItem.create.mockResolvedValue({ id: 'inv-1' });
       mockMarketplaceService.updateOrderStatus.mockResolvedValue({});
       mockActivityLogService.createActivityLog.mockResolvedValue({});
 
@@ -344,17 +359,26 @@ describe('AggregationService', () => {
     });
 
     it('should create activity log', async () => {
+      const mockCenter = {
+        id: 'center-1',
+        centerType: 'MAIN',
+        name: 'Test Center',
+      };
+
       const mockTransaction = {
         id: 'txn-1',
         transactionNumber: 'STX-20250121-000001',
         type: 'STOCK_IN',
         order: null,
+        center: mockCenter,
       };
 
+      mockPrismaService.aggregationCenter.findUnique.mockResolvedValue(mockCenter);
       mockPrismaService.$queryRaw.mockResolvedValue([
         { generate_stock_transaction_number: 'STX-20250121-000001' },
       ]);
       mockPrismaService.stockTransaction.create.mockResolvedValue(mockTransaction);
+      mockPrismaService.inventoryItem.findUnique.mockResolvedValue(null);
       mockActivityLogService.createActivityLog.mockResolvedValue({});
 
       await service.createStockIn(createDto, 'user-1');
@@ -373,6 +397,12 @@ describe('AggregationService', () => {
     });
 
     it('should update order status to AT_AGGREGATION', async () => {
+      const mockCenter = {
+        id: 'center-1',
+        centerType: 'MAIN',
+        name: 'Test Center',
+      };
+
       const mockTransaction = {
         id: 'txn-1',
         transactionNumber: 'STX-20250121-000001',
@@ -381,12 +411,16 @@ describe('AggregationService', () => {
           id: 'order-1',
           orderNumber: 'ORD-001',
         },
+        center: mockCenter,
       };
 
+      mockPrismaService.aggregationCenter.findUnique.mockResolvedValue(mockCenter);
       mockPrismaService.$queryRaw.mockResolvedValue([
         { generate_stock_transaction_number: 'STX-20250121-000001' },
       ]);
       mockPrismaService.stockTransaction.create.mockResolvedValue(mockTransaction);
+      mockPrismaService.inventoryItem.findUnique.mockResolvedValue(null);
+      mockPrismaService.inventoryItem.create.mockResolvedValue({ id: 'inv-1' });
       mockMarketplaceService.updateOrderStatus.mockResolvedValue({});
       mockActivityLogService.createActivityLog.mockResolvedValue({});
 
@@ -396,6 +430,240 @@ describe('AggregationService', () => {
         'order-1',
         { status: 'AT_AGGREGATION' },
         'user-1',
+      );
+    });
+
+    it('should create TRANSFER transaction when stock is transferred from satellite to main center', async () => {
+      const transferDto = {
+        centerId: 'main-center-1',
+        sourceCenterId: 'satellite-center-1',
+        variety: 'Kenya',
+        quantity: 100,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        batchId: 'batch-123',
+      };
+
+      const mockMainCenter = {
+        id: 'main-center-1',
+        centerType: 'MAIN',
+        name: 'Main Center',
+      };
+
+      const mockSatelliteCenter = {
+        id: 'satellite-center-1',
+        centerType: 'SATELLITE',
+        name: 'Satellite Center',
+      };
+
+      const mockTransaction = {
+        id: 'txn-transfer-1',
+        transactionNumber: 'STX-20250121-000002',
+        type: 'TRANSFER',
+        center: mockMainCenter,
+        order: null,
+      };
+
+      mockPrismaService.aggregationCenter.findUnique
+        .mockResolvedValueOnce(mockMainCenter) // Destination center
+        .mockResolvedValueOnce(mockSatelliteCenter); // Source center
+
+      mockPrismaService.$queryRaw.mockResolvedValue([
+        { generate_stock_transaction_number: 'STX-20250121-000002' },
+      ]);
+      mockPrismaService.stockTransaction.create.mockResolvedValue(mockTransaction);
+      mockPrismaService.inventoryItem.findUnique.mockResolvedValue(null);
+      mockPrismaService.inventoryItem.create.mockResolvedValue({ id: 'inv-1' });
+      mockActivityLogService.createActivityLog.mockResolvedValue({});
+      mockPrismaService.qualityCheck.create.mockResolvedValue({ id: 'qc-1' });
+      mockNotificationHelperService.createNotification.mockResolvedValue({});
+
+      const result = await service.createStockIn(transferDto, 'user-1');
+
+      expect(result.type).toBe('TRANSFER');
+      expect(mockPrismaService.stockTransaction.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'TRANSFER',
+            notes: expect.stringContaining('Transfer from Satellite Center'),
+          }),
+        }),
+      );
+    });
+
+    it('should automatically create quality check when stock is transferred from satellite to main center', async () => {
+      const transferDto = {
+        centerId: 'main-center-1',
+        sourceCenterId: 'satellite-center-1',
+        variety: 'Kenya',
+        quantity: 100,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        batchId: 'batch-123',
+      };
+
+      const mockMainCenter = {
+        id: 'main-center-1',
+        centerType: 'MAIN',
+        name: 'Main Center',
+      };
+
+      const mockSatelliteCenter = {
+        id: 'satellite-center-1',
+        centerType: 'SATELLITE',
+        name: 'Satellite Center',
+      };
+
+      const mockTransaction = {
+        id: 'txn-transfer-1',
+        transactionNumber: 'STX-20250121-000002',
+        type: 'TRANSFER',
+        center: mockMainCenter,
+        order: null,
+      };
+
+      mockPrismaService.aggregationCenter.findUnique
+        .mockResolvedValueOnce(mockMainCenter)
+        .mockResolvedValueOnce(mockSatelliteCenter);
+
+      mockPrismaService.$queryRaw.mockResolvedValue([
+        { generate_stock_transaction_number: 'STX-20250121-000002' },
+      ]);
+      mockPrismaService.stockTransaction.create.mockResolvedValue(mockTransaction);
+      mockPrismaService.inventoryItem.findUnique.mockResolvedValue(null);
+      mockPrismaService.inventoryItem.create.mockResolvedValue({ id: 'inv-1' });
+      mockActivityLogService.createActivityLog.mockResolvedValue({});
+      mockPrismaService.qualityCheck.create.mockResolvedValue({ id: 'qc-1' });
+      mockNotificationHelperService.createNotification.mockResolvedValue({});
+
+      await service.createStockIn(transferDto, 'user-1');
+
+      // Verify quality check was created
+      expect(mockPrismaService.qualityCheck.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            centerId: 'main-center-1',
+            transactionId: 'txn-transfer-1',
+            variety: 'Kenya',
+            quantity: 100,
+            qualityGrade: 'A',
+            qualityScore: 70, // Default passing score
+            batchId: 'batch-123',
+            notes: expect.stringContaining('Secondary quality check required'),
+          }),
+        }),
+      );
+
+      // Verify notification was created
+      expect(mockNotificationHelperService.createNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'QUALITY_CHECK',
+          title: 'Secondary Quality Check Required',
+          priority: 'HIGH',
+        }),
+      );
+    });
+
+    it('should throw BadRequestException if source center is not a SATELLITE', async () => {
+      const transferDto = {
+        centerId: 'main-center-1',
+        sourceCenterId: 'another-main-center',
+        variety: 'Kenya',
+        quantity: 100,
+        qualityGrade: 'A',
+      };
+
+      const mockMainCenter = {
+        id: 'main-center-1',
+        centerType: 'MAIN',
+        name: 'Main Center',
+      };
+
+      const mockOtherMainCenter = {
+        id: 'another-main-center',
+        centerType: 'MAIN', // Not a satellite!
+        name: 'Another Main Center',
+      };
+
+      mockPrismaService.aggregationCenter.findUnique
+        .mockResolvedValueOnce(mockMainCenter)
+        .mockResolvedValueOnce(mockOtherMainCenter);
+
+      await expect(service.createStockIn(transferDto, 'user-1')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mockPrismaService.stockTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException if destination center is not found', async () => {
+      const transferDto = {
+        centerId: 'non-existent-center',
+        sourceCenterId: 'satellite-center-1',
+        variety: 'Kenya',
+        quantity: 100,
+        qualityGrade: 'A',
+      };
+
+      mockPrismaService.aggregationCenter.findUnique.mockResolvedValueOnce(null);
+
+      await expect(service.createStockIn(transferDto, 'user-1')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should create activity log with STOCK_TRANSFER_RECEIVED action for transfers', async () => {
+      const transferDto = {
+        centerId: 'main-center-1',
+        sourceCenterId: 'satellite-center-1',
+        variety: 'Kenya',
+        quantity: 100,
+        qualityGrade: 'A',
+        batchId: 'batch-123',
+      };
+
+      const mockMainCenter = {
+        id: 'main-center-1',
+        centerType: 'MAIN',
+        name: 'Main Center',
+      };
+
+      const mockSatelliteCenter = {
+        id: 'satellite-center-1',
+        centerType: 'SATELLITE',
+        name: 'Satellite Center',
+      };
+
+      const mockTransaction = {
+        id: 'txn-transfer-1',
+        transactionNumber: 'STX-20250121-000002',
+        type: 'TRANSFER',
+        order: null,
+      };
+
+      mockPrismaService.aggregationCenter.findUnique
+        .mockResolvedValueOnce(mockMainCenter)
+        .mockResolvedValueOnce(mockSatelliteCenter);
+
+      mockPrismaService.$queryRaw.mockResolvedValue([
+        { generate_stock_transaction_number: 'STX-20250121-000002' },
+      ]);
+      mockPrismaService.stockTransaction.create.mockResolvedValue(mockTransaction);
+      mockPrismaService.inventoryItem.findUnique.mockResolvedValue(null);
+      mockPrismaService.inventoryItem.create.mockResolvedValue({ id: 'inv-1' });
+      mockActivityLogService.createActivityLog.mockResolvedValue({});
+      mockPrismaService.qualityCheck.create.mockResolvedValue({ id: 'qc-1' });
+      mockNotificationHelperService.createNotification.mockResolvedValue({});
+
+      await service.createStockIn(transferDto, 'user-1');
+
+      expect(mockActivityLogService.createActivityLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'STOCK_TRANSFER_RECEIVED',
+          metadata: expect.objectContaining({
+            isTransfer: true,
+            sourceCenterId: 'satellite-center-1',
+          }),
+        }),
       );
     });
   });

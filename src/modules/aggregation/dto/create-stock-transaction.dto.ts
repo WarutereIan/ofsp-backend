@@ -70,4 +70,14 @@ export class CreateStockTransactionDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  sourceCenterId?: string; // For transfers from satellite to main center
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  transferTransactionId?: string; // Reference to the STOCK_OUT transaction at source center
 }

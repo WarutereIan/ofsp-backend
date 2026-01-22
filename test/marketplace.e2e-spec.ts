@@ -289,7 +289,6 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should create order → notifications sent → activity logs created', async () => {
-      console.log('📦 Stage 1: Preparing order creation data...');
       const orderData = {
         farmerId: farmerUser.id,
         listingId: testListing.id,
@@ -301,7 +300,6 @@ describe('MarketplaceController (e2e)', () => {
         deliveryCounty: 'Nairobi',
       };
 
-      console.log('📦 Stage 2: Creating order via API...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/marketplace/orders`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -312,18 +310,15 @@ describe('MarketplaceController (e2e)', () => {
       }
       expect(response.status).toBe(201);
 
-      console.log('📦 Stage 3: Verifying order creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.orderNumber).toBeDefined();
       expect(response.body.data.batchId).toBeDefined();
       expect(response.body.data.qrCode).toBeDefined();
       expect(response.body.data.qrCode).toMatch(/^QR-BATCH-/);
-      console.log(`✅ Order created: ${response.body.data.orderNumber} with batchId: ${response.body.data.batchId}`);
 
       testOrder = response.body.data;
 
-      console.log('📦 Stage 4: Verifying notifications were created...');
       const notifications = await prisma.notification.findMany({
         where: {
           OR: [
@@ -333,9 +328,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThanOrEqual(2);
-      console.log(`✅ ${notifications.length} notifications created for order`);
 
-      console.log('📦 Stage 5: Verifying activity logs were created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'ORDER',
@@ -344,12 +337,9 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThanOrEqual(2);
-      console.log(`✅ ${activityLogs.length} activity logs created for order`);
-      console.log('✅ Test completed: Order creation with notifications and activity logs');
     });
 
     it('should update order status → notifications sent → activity logs created', async () => {
-      console.log('🔄 Stage 1: Creating initial order with ORDER_PLACED status...');
       testOrder = await prisma.marketplaceOrder.create({
         data: {
           buyerId: buyerUser.id,
@@ -364,21 +354,16 @@ describe('MarketplaceController (e2e)', () => {
           status: 'ORDER_PLACED',
         },
       });
-      console.log(`✅ Order created: ${testOrder.orderNumber} with status: ${testOrder.status}`);
 
-      console.log('🔄 Stage 2: Updating order status to ORDER_ACCEPTED via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${farmerToken}`)
         .send({ status: 'ORDER_ACCEPTED' })
         .expect(200);
 
-      console.log('🔄 Stage 3: Verifying status update response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data.status).toBe('ORDER_ACCEPTED');
-      console.log(`✅ Order status updated to: ${response.body.data.status}`);
 
-      console.log('🔄 Stage 4: Verifying notifications were created...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'ORDER',
@@ -387,9 +372,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThan(0);
-      console.log(`✅ ${notifications.length} notifications created for status change`);
 
-      console.log('🔄 Stage 5: Verifying activity log was created with correct metadata...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'ORDER',
@@ -402,20 +385,15 @@ describe('MarketplaceController (e2e)', () => {
         oldStatus: 'ORDER_PLACED',
         newStatus: 'ORDER_ACCEPTED',
       });
-      console.log(`✅ Activity log created with oldStatus: ORDER_PLACED, newStatus: ORDER_ACCEPTED`);
 
-      console.log('🔄 Stage 6: Verifying status history was updated...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(updatedOrder?.statusHistory).toBeDefined();
       expect(Array.isArray(updatedOrder?.statusHistory)).toBe(true);
-      console.log(`✅ Status history updated with ${updatedOrder?.statusHistory.length} entries`);
-      console.log('✅ Test completed: Order status update with notifications and activity logs');
     });
 
     it('should complete full order lifecycle', async () => {
-      console.log('🔄 Stage 1: Creating initial order with ORDER_PLACED status...');
       testOrder = await prisma.marketplaceOrder.create({
         data: {
           buyerId: buyerUser.id,
@@ -432,25 +410,19 @@ describe('MarketplaceController (e2e)', () => {
           qrCode: 'QR-BATCH-LIFECYCLE-001',
         },
       });
-      console.log(`✅ Order created: ${testOrder.orderNumber} with status: ${testOrder.status}`);
 
-      console.log('🔄 Stage 2: Transitioning order to ORDER_ACCEPTED...');
       const acceptResponse = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${farmerToken}`)
         .send({ status: 'ORDER_ACCEPTED' })
         .expect(200);
-      console.log(`✅ Order status updated to: ${acceptResponse.body.data.status}`);
 
-      console.log('🔄 Stage 3: Transitioning order to PAYMENT_SECURED (simulating payment service)...');
       const paymentResponse = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${buyerToken}`)
         .send({ status: 'PAYMENT_SECURED' })
         .expect(200);
-      console.log(`✅ Order status updated to: ${paymentResponse.body.data.status}`);
 
-      console.log('🔄 Stage 4: Verifying final order state and status history...');
       const finalOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
@@ -458,9 +430,6 @@ describe('MarketplaceController (e2e)', () => {
       expect(finalOrder?.statusHistory).toBeDefined();
       expect(Array.isArray(finalOrder?.statusHistory)).toBe(true);
       expect(finalOrder?.statusHistory.length).toBeGreaterThanOrEqual(3);
-      console.log(`✅ Final order status: ${finalOrder?.status}`);
-      console.log(`✅ Status history contains ${finalOrder?.statusHistory.length} entries`);
-      console.log('✅ Test completed: Full order lifecycle (ORDER_PLACED → ORDER_ACCEPTED → PAYMENT_SECURED)');
     });
   });
 
@@ -490,7 +459,6 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should initiate negotiation → status PENDING → notifications sent → activity logs created', async () => {
-      console.log('🤝 Stage 1: Initiating negotiation via API...');
       const negotiationData = {
         listingId: testListing.id,
         proposedPrice: 45,
@@ -514,14 +482,12 @@ describe('MarketplaceController (e2e)', () => {
       expect(negotiation.listingId).toBe(testListing.id);
       expect(negotiation.buyerId).toBe(buyerUser.id);
       expect(negotiation.farmerId).toBe(farmerUser.id);
-      console.log(`✅ Negotiation created: ${negotiation.negotiationNumber} with status: ${negotiation.status}`);
 
       // Verify negotiation message was created
       const messages = await prisma.negotiationMessage.findMany({
         where: { negotiationId: negotiation.id },
       });
       expect(messages.length).toBeGreaterThan(0);
-      console.log(`✅ Negotiation message created: ${messages.length} message(s)`);
 
       // Verify notifications (to farmer and buyer) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -533,9 +499,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for negotiation initiation');
       }
 
       // Verify activity logs
@@ -546,8 +510,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThan(0);
-      console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
-      console.log('✅ Test completed: Negotiation initiation');
     });
 
     it('should send counter offer → status COUNTER_OFFER → notifications sent → activity logs created', async () => {
@@ -582,7 +544,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('🤝 Stage 1: Sending counter offer via API...');
       const counterOfferData = {
         message: 'I can offer 47 per kg for 80kg',
         counterPrice: 47,
@@ -605,14 +566,12 @@ describe('MarketplaceController (e2e)', () => {
       });
       expect(updatedNegotiation?.status).toBe('COUNTER_OFFER');
       expect(updatedNegotiation?.negotiatedPricePerKg).toBe(47);
-      console.log(`✅ Negotiation status updated to: ${updatedNegotiation?.status}`);
 
       // Verify message was added
       const messages = await prisma.negotiationMessage.findMany({
         where: { negotiationId: negotiation.id },
       });
       expect(messages.length).toBe(2);
-      console.log(`✅ Counter offer message added: ${messages.length} total message(s)`);
 
       // Verify notifications - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -626,9 +585,7 @@ describe('MarketplaceController (e2e)', () => {
         take: 2,
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for counter offer');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -639,11 +596,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for counter offer');
       }
-      console.log('✅ Test completed: Counter offer');
     });
 
     it('should accept negotiation → status ACCEPTED → notifications sent → activity logs created', async () => {
@@ -666,7 +620,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('🤝 Stage 1: Accepting negotiation via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/negotiations/${negotiation.id}/accept`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -682,7 +635,6 @@ describe('MarketplaceController (e2e)', () => {
         where: { id: negotiation.id },
       });
       expect(updatedNegotiation?.status).toBe('ACCEPTED');
-      console.log(`✅ Negotiation status updated to: ${updatedNegotiation?.status}`);
 
       // Verify notifications (to both parties) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -696,9 +648,7 @@ describe('MarketplaceController (e2e)', () => {
         take: 2,
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for negotiation acceptance/rejection');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -709,11 +659,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for negotiation acceptance/rejection');
       }
-      console.log('✅ Test completed: Negotiation acceptance');
     });
 
     it('should reject negotiation → status REJECTED → notifications sent → activity logs created', async () => {
@@ -736,7 +683,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('🤝 Stage 1: Rejecting negotiation via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/negotiations/${negotiation.id}/reject`)
         .set('Authorization', `Bearer ${farmerToken}`)
@@ -752,7 +698,6 @@ describe('MarketplaceController (e2e)', () => {
         where: { id: negotiation.id },
       });
       expect(updatedNegotiation?.status).toBe('REJECTED');
-      console.log(`✅ Negotiation status updated to: ${updatedNegotiation?.status}`);
 
       // Verify notifications (to both parties)
       const notifications = await prisma.notification.findMany({
@@ -764,9 +709,7 @@ describe('MarketplaceController (e2e)', () => {
         },
         });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for negotiation acceptance/rejection');
       }
 
       // Verify activity logs
@@ -777,8 +720,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThan(0);
-      console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
-      console.log('✅ Test completed: Negotiation rejection');
     });
   });
 
@@ -826,7 +767,6 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should convert accepted negotiation to order → status CONVERTED → notifications sent → activity logs created', async () => {
-      console.log('🤝 Stage 1: Preparing order data from negotiation...');
       const orderData = {
         farmerId: farmerUser.id,
         listingId: testListing.id,
@@ -838,9 +778,7 @@ describe('MarketplaceController (e2e)', () => {
         deliveryCounty: 'Nairobi',
         negotiationId: testNegotiation.id,
       };
-      console.log(`✅ Order data prepared for negotiation: ${testNegotiation.negotiationNumber}`);
 
-      console.log('🤝 Stage 2: Creating order from negotiation via API...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/marketplace/orders`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -851,20 +789,15 @@ describe('MarketplaceController (e2e)', () => {
       }
       expect(response.status).toBe(201);
 
-      console.log('🤝 Stage 3: Verifying order creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       const order = response.body.data;
-      console.log(`✅ Order created: ${order.orderNumber}`);
 
-      console.log('🤝 Stage 4: Verifying negotiation status was updated to CONVERTED...');
       const updatedNegotiation = await prisma.negotiation.findUnique({
         where: { id: testNegotiation.id },
       });
       expect(updatedNegotiation?.status).toBe('CONVERTED');
       expect(updatedNegotiation?.orderId).toBe(order.id);
-      console.log(`✅ Negotiation status updated to: ${updatedNegotiation?.status}`);
-      console.log(`✅ Negotiation linked to order: ${updatedNegotiation?.orderId}`);
 
       // Verify notifications (to farmer and buyer)
       const notifications = await prisma.notification.findMany({
@@ -878,7 +811,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThanOrEqual(2);
-      console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
 
       // Verify activity logs
       const negotiationLogs = await prisma.activityLog.findMany({
@@ -894,8 +826,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(negotiationLogs.length + orderLogs.length).toBeGreaterThan(0);
-      console.log(`✅ Activity logs created: ${negotiationLogs.length + orderLogs.length} log(s)`);
-      console.log('✅ Test completed: Negotiation to order conversion');
     });
   });
 
@@ -903,7 +833,6 @@ describe('MarketplaceController (e2e)', () => {
 
   describe('RFQ Lifecycle', () => {
     it('should create RFQ → status DRAFT → notifications sent → activity logs created', async () => {
-      console.log('📋 Stage 1: Creating RFQ draft via API...');
       const rfqData = {
         title: 'RFQ for OFSP Kenya Variety',
         productType: 'FRESH_ROOTS',
@@ -930,7 +859,6 @@ describe('MarketplaceController (e2e)', () => {
       const rfq = response.body.data;
       expect(rfq.status).toBe('DRAFT');
       expect(rfq.buyerId).toBe(buyerUser.id);
-      console.log(`✅ RFQ created: ${rfq.rfqNumber} with status: ${rfq.status}`);
 
       // Verify notifications (to buyer) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -941,9 +869,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for RFQ creation');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -954,11 +880,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for RFQ creation');
       }
-      console.log('✅ Test completed: RFQ creation');
     });
 
     it('should publish RFQ → status PUBLISHED → notifications sent → activity logs created', async () => {
@@ -984,7 +907,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Publishing RFQ via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/rfqs/${rfq.id}/publish`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -1000,7 +922,6 @@ describe('MarketplaceController (e2e)', () => {
         where: { id: rfq.id },
       });
       expect(updatedRFQ?.status).toBe('PUBLISHED');
-      console.log(`✅ RFQ status updated to: ${updatedRFQ?.status}`);
 
       // Verify notifications (to buyer and potentially suppliers)
       const notifications = await prisma.notification.findMany({
@@ -1011,9 +932,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for RFQ publish');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -1024,11 +943,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for RFQ publish');
       }
-      console.log('✅ Test completed: RFQ publish');
     });
 
     it('should submit RFQ response → status SUBMITTED → notifications sent → activity logs created', async () => {
@@ -1054,7 +970,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Submitting RFQ response via API...');
       const responseData = {
         pricePerKg: 50,
         notes: 'Can deliver in 7 days with 50% advance payment',
@@ -1077,14 +992,12 @@ describe('MarketplaceController (e2e)', () => {
       expect(response.body.data).toBeDefined();
       const rfqResponse = response.body.data;
       expect(rfqResponse.status).toBe('SUBMITTED');
-      console.log(`✅ RFQ response submitted: ${rfqResponse.id} with status: ${rfqResponse.status}`);
 
       // Verify RFQ totalResponses incremented
       const updatedRFQ = await prisma.rFQ.findUnique({
         where: { id: rfq.id },
       });
       expect(updatedRFQ?.totalResponses).toBeGreaterThan(0);
-      console.log(`✅ RFQ total responses: ${updatedRFQ?.totalResponses}`);
 
       // Verify notifications (to buyer and supplier) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -1096,9 +1009,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for RFQ response submission');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -1115,11 +1026,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (rfqLogs.length + responseLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${rfqLogs.length + responseLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for RFQ response submission');
       }
-      console.log('✅ Test completed: RFQ response submission');
     });
 
     it('should update RFQ response status to SHORTLISTED → notifications sent → activity logs created', async () => {
@@ -1159,7 +1067,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Shortlisting RFQ response via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/rfq-responses/${rfqResponse.id}/status`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -1175,7 +1082,6 @@ describe('MarketplaceController (e2e)', () => {
         where: { id: rfqResponse.id },
       });
       expect(updatedResponse?.status).toBe('SHORTLISTED');
-      console.log(`✅ RFQ response status updated to: ${updatedResponse?.status}`);
 
       // Verify notifications (to supplier) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -1186,9 +1092,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for RFQ response shortlisting');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -1199,11 +1103,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for RFQ response shortlisting');
       }
-      console.log('✅ Test completed: RFQ response shortlisting');
     });
 
     it('should award RFQ response → status AWARDED → RFQ status AWARDED → notifications sent → activity logs created', async () => {
@@ -1243,7 +1144,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Awarding RFQ response via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/rfqs/${rfq.id}/award/${rfqResponse.id}`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -1259,14 +1159,12 @@ describe('MarketplaceController (e2e)', () => {
         where: { id: rfqResponse.id },
       });
       expect(updatedResponse?.status).toBe('AWARDED');
-      console.log(`✅ RFQ response status updated to: ${updatedResponse?.status}`);
 
       // Verify RFQ status updated to AWARDED
       const updatedRFQ = await prisma.rFQ.findUnique({
         where: { id: rfq.id },
       });
       expect(updatedRFQ?.status).toBe('AWARDED');
-      console.log(`✅ RFQ status updated to: ${updatedRFQ?.status}`);
 
       // Verify notifications (to supplier and buyer) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -1278,9 +1176,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for RFQ award');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -1297,11 +1193,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (rfqLogs.length + responseLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${rfqLogs.length + responseLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for RFQ award');
       }
-      console.log('✅ Test completed: RFQ award');
     });
 
     it('should close RFQ → status CLOSED → notifications sent → activity logs created', async () => {
@@ -1327,7 +1220,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Closing RFQ via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/rfqs/${rfq.id}/close`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -1343,7 +1235,6 @@ describe('MarketplaceController (e2e)', () => {
         where: { id: rfq.id },
       });
       expect(updatedRFQ?.status).toBe('CLOSED');
-      console.log(`✅ RFQ status updated to: ${updatedRFQ?.status}`);
 
       // Verify notifications (to buyer and potentially suppliers)
       const notifications = await prisma.notification.findMany({
@@ -1354,9 +1245,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for RFQ close');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -1367,11 +1256,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for RFQ close');
       }
-      console.log('✅ Test completed: RFQ close');
     });
   });
 
@@ -1419,7 +1305,6 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should convert awarded RFQ response to order → notifications sent → activity logs created', async () => {
-      console.log('📋 Stage 1: Preparing order data from RFQ response...');
       const orderData = {
         farmerId: farmerUser.id,
         variety: 'KENYA',
@@ -1430,9 +1315,7 @@ describe('MarketplaceController (e2e)', () => {
         deliveryCounty: 'Nairobi',
         rfqResponseId: testRFQResponse.id,
       };
-      console.log(`✅ Order data prepared for RFQ response: ${testRFQResponse.id}`);
 
-      console.log('📋 Stage 2: Creating order from RFQ response via API...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/marketplace/orders`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -1443,18 +1326,14 @@ describe('MarketplaceController (e2e)', () => {
       }
       expect(response.status).toBe(201);
 
-      console.log('📋 Stage 3: Verifying order creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       const order = response.body.data;
-      console.log(`✅ Order created: ${order.orderNumber}`);
 
-      console.log('📋 Stage 4: Verifying RFQ response status was updated to AWARDED...');
       const updatedRFQResponse = await prisma.rFQResponse.findUnique({
         where: { id: testRFQResponse.id },
       });
       expect(updatedRFQResponse?.status).toBe('AWARDED');
-      console.log(`✅ RFQ response status updated to: ${updatedRFQResponse?.status}`);
 
       // Verify notifications (to supplier and buyer)
       const notifications = await prisma.notification.findMany({
@@ -1468,7 +1347,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThanOrEqual(2);
-      console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
 
       // Verify activity logs
       const rfqLogs = await prisma.activityLog.findMany({
@@ -1490,8 +1368,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(rfqLogs.length + responseLogs.length + orderLogs.length).toBeGreaterThan(0);
-      console.log(`✅ Activity logs created: ${rfqLogs.length + responseLogs.length + orderLogs.length} log(s)`);
-      console.log('✅ Test completed: RFQ response to order conversion');
     });
   });
 
@@ -1538,18 +1414,14 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should handle payment secured → order status PAYMENT_SECURED → notifications sent', async () => {
-      console.log('💳 Stage 1: Updating order status to PAYMENT_SECURED (simulating payment service)...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${buyerToken}`)
         .send({ status: 'PAYMENT_SECURED' })
         .expect(200);
 
-      console.log('💳 Stage 2: Verifying order status update...');
       expect(response.body.data.status).toBe('PAYMENT_SECURED');
-      console.log(`✅ Order status updated to: ${response.body.data.status}`);
 
-      console.log('💳 Stage 3: Verifying notifications were sent...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'ORDER',
@@ -1557,50 +1429,37 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThan(0);
-      console.log(`✅ ${notifications.length} notifications sent for payment secured status`);
-      console.log('✅ Test completed: Payment secured integration with notifications');
     });
 
     it('should handle transport accepted → order status IN_TRANSIT', async () => {
-      console.log('🚚 Stage 1: Setting order status to PAYMENT_SECURED (prerequisite)...');
       await prisma.marketplaceOrder.update({
         where: { id: testOrder.id },
         data: { status: 'PAYMENT_SECURED' },
       });
-      console.log(`✅ Order status set to: PAYMENT_SECURED`);
 
-      console.log('🚚 Stage 2: Updating order status to IN_TRANSIT (simulating transport service)...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${buyerToken}`)
         .send({ status: 'IN_TRANSIT' })
         .expect(200);
 
-      console.log('🚚 Stage 3: Verifying order status update...');
       expect(response.body.data.status).toBe('IN_TRANSIT');
-      console.log(`✅ Order status updated to: ${response.body.data.status}`);
-      console.log('✅ Test completed: Transport accepted integration');
     });
   });
 
   describe('Listings', () => {
     it('should return all listings', async () => {
-      console.log('📦 Stage 1: Fetching all listings via API...');
       const response = await request(app.getHttpServer())
         .get(`/${apiPrefix}/marketplace/listings`)
         .set('Authorization', `Bearer ${farmerToken}`)
         .expect(200);
 
-      console.log('📦 Stage 2: Verifying listings response structure...');
       expect(response.body).toBeDefined();
       const listings = Array.isArray(response.body) ? response.body : response.body.data || response.body;
       expect(Array.isArray(listings)).toBe(true);
-      console.log(`✅ Retrieved ${listings.length} listings`);
-      console.log('✅ Test completed: Listings retrieval');
     });
 
     it('should create a listing', async () => {
-      console.log('📦 Stage 1: Preparing listing data...');
       const listingData = {
         variety: 'KENYA', // DTO now expects 'KENYA' to match Prisma enum
         quantity: 100,
@@ -1611,9 +1470,7 @@ describe('MarketplaceController (e2e)', () => {
         location: 'Parklands',
         harvestDate: new Date().toISOString(),
       };
-      console.log(`✅ Listing data prepared: ${listingData.variety} variety, ${listingData.quantity}kg`);
 
-      console.log('📦 Stage 2: Creating listing via API...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/marketplace/listings`)
         .set('Authorization', `Bearer ${farmerToken}`)
@@ -1624,18 +1481,14 @@ describe('MarketplaceController (e2e)', () => {
       }
       expect(response.status).toBe(201);
 
-      console.log('📦 Stage 3: Verifying listing creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.variety).toBe(listingData.variety);
-      console.log(`✅ Listing created with variety: ${response.body.data.variety}`);
-      console.log('✅ Test completed: Listing creation');
     });
   });
 
   describe('RFQs', () => {
     it('should create an RFQ', async () => {
-      console.log('📋 Stage 1: Preparing RFQ data...');
       const rfqData = {
         title: 'RFQ for OFSP',
         productType: 'FRESH_ROOTS',
@@ -1648,9 +1501,7 @@ describe('MarketplaceController (e2e)', () => {
         description: 'Need fresh OFSP',
         quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
       };
-      console.log(`✅ RFQ data prepared: ${rfqData.variety} variety, ${rfqData.quantity}kg`);
 
-      console.log('📋 Stage 2: Creating RFQ via API...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/marketplace/rfqs`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -1664,12 +1515,9 @@ describe('MarketplaceController (e2e)', () => {
       }
       expect(response.status).toBe(201);
 
-      console.log('📋 Stage 3: Verifying RFQ creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.rfqNumber).toBeDefined();
-      console.log(`✅ RFQ created with number: ${response.body.data.rfqNumber}`);
-      console.log('✅ Test completed: RFQ creation');
     });
   });
 
@@ -1677,7 +1525,6 @@ describe('MarketplaceController (e2e)', () => {
 
   describe('Sourcing Request Lifecycle', () => {
     it('should create sourcing request → status DRAFT → notifications sent → activity logs created', async () => {
-      console.log('📋 Stage 1: Creating sourcing request draft via API...');
       const requestData = {
         title: 'Sourcing Request for OFSP Kenya Variety',
         productType: 'FRESH_ROOTS',
@@ -1704,7 +1551,6 @@ describe('MarketplaceController (e2e)', () => {
       const sourcingRequest = response.body.data;
       expect(sourcingRequest.status).toBe('DRAFT');
       expect(sourcingRequest.buyerId).toBe(buyerUser.id);
-      console.log(`✅ Sourcing request created: ${sourcingRequest.requestId} with status: ${sourcingRequest.status}`);
 
       // Verify notifications (to buyer) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -1715,9 +1561,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for sourcing request creation');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -1728,11 +1572,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for sourcing request creation');
       }
-      console.log('✅ Test completed: Sourcing request creation');
     });
 
     it('should publish sourcing request → status OPEN → notifications sent → activity logs created', async () => {
@@ -1757,7 +1598,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Publishing sourcing request via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/sourcing-requests/${sourcingRequest.id}/publish`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -1773,7 +1613,6 @@ describe('MarketplaceController (e2e)', () => {
         where: { id: sourcingRequest.id },
       });
       expect(updatedRequest?.status).toBe('OPEN');
-      console.log(`✅ Sourcing request status updated to: ${updatedRequest?.status}`);
 
       // Verify notifications - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -1784,9 +1623,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for sourcing request publish');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -1797,11 +1634,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for sourcing request publish');
       }
-      console.log('✅ Test completed: Sourcing request publish');
     });
 
     it('should submit supplier offer → status PENDING → notifications sent → activity logs created', async () => {
@@ -1826,7 +1660,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Submitting supplier offer via API...');
       const offerData = {
         pricePerKg: 45,
         notes: 'Can deliver fresh OFSP within 5 days',
@@ -1849,14 +1682,12 @@ describe('MarketplaceController (e2e)', () => {
       expect(response.body.data).toBeDefined();
       const offer = response.body.data;
       expect(offer.status).toBe('pending');
-      console.log(`✅ Supplier offer submitted: ${offer.id} with status: ${offer.status}`);
 
       // Verify sourcing request suppliers array updated
       const updatedRequest = await prisma.sourcingRequest.findUnique({
         where: { id: sourcingRequest.id },
       });
       expect(updatedRequest?.suppliers).toContain(farmerUser.id);
-      console.log(`✅ Sourcing request suppliers array updated: ${updatedRequest?.suppliers.length} supplier(s)`);
 
       // Verify notifications (to buyer and supplier) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -1868,9 +1699,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for supplier offer submission');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -1887,11 +1716,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (requestLogs.length + offerLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${requestLogs.length + offerLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for supplier offer submission');
       }
-      console.log('✅ Test completed: Supplier offer submission');
     });
 
     it('should accept supplier offer → status ACCEPTED → notifications sent → activity logs created', async () => {
@@ -1928,7 +1754,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Accepting supplier offer via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/supplier-offers/${offer.id}/accept`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -1944,7 +1769,6 @@ describe('MarketplaceController (e2e)', () => {
         where: { id: offer.id },
       });
       expect(updatedOffer?.status).toBe('accepted');
-      console.log(`✅ Supplier offer status updated to: ${updatedOffer?.status}`);
 
       // Verify notifications (to supplier and buyer) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -1956,9 +1780,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for supplier offer acceptance');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -1969,11 +1791,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for supplier offer acceptance');
       }
-      console.log('✅ Test completed: Supplier offer acceptance');
     });
 
     it('should convert accepted supplier offer to order → notifications sent → activity logs created', async () => {
@@ -2010,7 +1829,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Creating order from accepted supplier offer...');
       const orderData = {
         farmerId: farmerUser.id,
         variety: 'KENYA',
@@ -2032,14 +1850,12 @@ describe('MarketplaceController (e2e)', () => {
       }
       expect(response.status).toBe(201);
       const order = response.body.data;
-      console.log(`✅ Order created: ${order.orderNumber}`);
 
       // Verify offer linked to order
       const updatedOffer = await prisma.supplierOffer.findUnique({
         where: { id: offer.id },
       });
       expect(updatedOffer?.orderId).toBe(order.id);
-      console.log(`✅ Supplier offer linked to order: ${updatedOffer?.orderId}`);
 
       // Verify notifications (to supplier and buyer) - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -2053,9 +1869,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for supplier offer to order conversion');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -2072,11 +1886,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (offerLogs.length + orderLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${offerLogs.length + orderLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for supplier offer to order conversion');
       }
-      console.log('✅ Test completed: Supplier offer to order conversion');
     });
 
     it('should close sourcing request → status CLOSED → notifications sent → activity logs created', async () => {
@@ -2101,7 +1912,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
 
-      console.log('📋 Stage 1: Closing sourcing request via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/sourcing-requests/${sourcingRequest.id}/close`)
         .set('Authorization', `Bearer ${buyerToken}`)
@@ -2117,7 +1927,6 @@ describe('MarketplaceController (e2e)', () => {
         where: { id: sourcingRequest.id },
       });
       expect(updatedRequest?.status).toBe('CLOSED');
-      console.log(`✅ Sourcing request status updated to: ${updatedRequest?.status}`);
 
       // Verify notifications - Note: May not be implemented yet
       const notifications = await prisma.notification.findMany({
@@ -2128,9 +1937,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (notifications.length > 0) {
-        console.log(`✅ Notifications sent: ${notifications.length} notification(s)`);
       } else {
-        console.log('⚠️  Notifications not yet implemented for sourcing request close');
       }
 
       // Verify activity logs - Note: May not be implemented yet
@@ -2141,11 +1948,8 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       if (activityLogs.length > 0) {
-        console.log(`✅ Activity logs created: ${activityLogs.length} log(s)`);
       } else {
-        console.log('⚠️  Activity logs not yet implemented for sourcing request close');
       }
-      console.log('✅ Test completed: Sourcing request close');
     });
   });
 
@@ -2204,7 +2008,6 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should create stock in → order status AT_AGGREGATION → inventory created → notifications sent → activity logs created', async () => {
-      console.log('📦 Stage 1: Creating stock in transaction via API...');
       const stockInData = {
         centerId: aggregationCenter.id,
         variety: 'KENYA',
@@ -2221,7 +2024,6 @@ describe('MarketplaceController (e2e)', () => {
         .send(stockInData)
         .expect(201);
 
-      console.log('📦 Stage 2: Verifying stock in transaction creation...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.type).toBe('STOCK_IN');
@@ -2229,16 +2031,12 @@ describe('MarketplaceController (e2e)', () => {
       expect(response.body.data.farmerId).toBe(farmerUser.id);
       expect(response.body.data.batchId).toBe(testOrder.batchId);
       expect(response.body.data.qrCode).toBe(testOrder.qrCode);
-      console.log(`✅ Stock in transaction created: ${response.body.data.transactionNumber}`);
 
-      console.log('📦 Stage 3: Verifying order status updated to AT_AGGREGATION...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(updatedOrder?.status).toBe('AT_AGGREGATION');
-      console.log(`✅ Order status updated to: ${updatedOrder?.status}`);
 
-      console.log('📦 Stage 4: Verifying inventory item was created (if applicable)...');
       const inventoryItems = await prisma.inventoryItem.findMany({
         where: {
           centerId: aggregationCenter.id,
@@ -2249,12 +2047,9 @@ describe('MarketplaceController (e2e)', () => {
       if (inventoryItems.length > 0) {
         expect(inventoryItems[0].batchId).toBe(testOrder.batchId);
         expect(inventoryItems[0].variety).toBe('KENYA');
-        console.log(`✅ ${inventoryItems.length} inventory item(s) created with batch ID: ${inventoryItems[0].batchId}`);
       } else {
-        console.log(`ℹ️  Inventory items may be created separately or via database triggers`);
       }
 
-      console.log('📦 Stage 5: Verifying notifications were sent (3: manager, buyer, farmer)...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'ORDER',
@@ -2262,9 +2057,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThanOrEqual(3);
-      console.log(`✅ ${notifications.length} notification(s) created for AT_AGGREGATION`);
 
-      console.log('📦 Stage 6: Verifying activity logs were created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           OR: [
@@ -2274,8 +2067,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThan(0);
-      console.log(`✅ ${activityLogs.length} activity log(s) created`);
-      console.log('✅ Test completed: At Aggregation stage with all requirements');
     });
   });
 
@@ -2353,7 +2144,6 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should create quality check → order QUALITY_CHECKED → QUALITY_APPROVED → notifications sent → activity logs created', async () => {
-      console.log('🔍 Stage 1: Creating quality check via API...');
       const qualityCheckData = {
         centerId: aggregationCenter.id,
         orderId: testOrder.id,
@@ -2374,7 +2164,6 @@ describe('MarketplaceController (e2e)', () => {
         .send(qualityCheckData)
         .expect(201);
 
-      console.log('🔍 Stage 2: Verifying quality check creation...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.approved).toBe(true);
@@ -2382,18 +2171,14 @@ describe('MarketplaceController (e2e)', () => {
       expect(response.body.data.qualityGrade).toBe('A');
       expect(response.body.data.farmerId).toBe(farmerUser.id);
       expect(response.body.data.batchId).toBe(testOrder.batchId);
-      console.log(`✅ Quality check created: ${response.body.data.id} with score: ${response.body.data.qualityScore}`);
 
-      console.log('🔍 Stage 3: Verifying order status updated to QUALITY_APPROVED...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(updatedOrder?.status).toBe('QUALITY_APPROVED');
       expect(updatedOrder?.qualityScore).toBe(85);
       expect(updatedOrder?.qualityFeedback).toBe('Quality approved');
-      console.log(`✅ Order status updated to: ${updatedOrder?.status} with quality score: ${updatedOrder?.qualityScore}`);
 
-      console.log('🔍 Stage 4: Verifying notifications were sent (2: buyer, farmer)...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'ORDER',
@@ -2402,9 +2187,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThanOrEqual(2);
-      console.log(`✅ ${notifications.length} notification(s) created for quality check`);
 
-      console.log('🔍 Stage 5: Verifying activity logs were created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'ORDER',
@@ -2421,12 +2204,9 @@ describe('MarketplaceController (e2e)', () => {
         )
       );
       expect(statusTransitions.length).toBeGreaterThanOrEqual(1);
-      console.log(`✅ ${activityLogs.length} activity log(s) created with ${statusTransitions.length} status transition(s)`);
-      console.log('✅ Test completed: Quality check → QUALITY_APPROVED with all requirements');
     });
 
     it('should create quality check → order QUALITY_REJECTED when score < 70 → notifications sent', async () => {
-      console.log('🔍 Stage 1: Creating quality check with low score via API...');
       const qualityCheckData = {
         centerId: aggregationCenter.id,
         orderId: testOrder.id,
@@ -2450,14 +2230,11 @@ describe('MarketplaceController (e2e)', () => {
       }
       expect(response.status).toBe(201);
 
-      console.log('🔍 Stage 2: Verifying quality check creation (rejected)...');
       expect(response.body.success).toBe(true);
       expect(response.body.data.approved).toBe(false);
       expect(response.body.data.qualityScore).toBe(65);
       expect(response.body.data.rejectionReason).toBeDefined();
-      console.log(`✅ Quality check created (rejected) with score: ${response.body.data.qualityScore}`);
 
-      console.log('🔍 Stage 3: Verifying order status updated to QUALITY_REJECTED...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
@@ -2465,9 +2242,7 @@ describe('MarketplaceController (e2e)', () => {
       expect(updatedOrder?.qualityScore).toBe(65);
       expect(updatedOrder?.qualityFeedback).toBeDefined();
       expect(updatedOrder?.qualityFeedback).toMatch(/Quality rejected|Quality score below threshold/i);
-      console.log(`✅ Order status updated to: ${updatedOrder?.status}`);
 
-      console.log('🔍 Stage 4: Verifying notifications were sent for rejection...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'ORDER',
@@ -2476,8 +2251,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThanOrEqual(2);
-      console.log(`✅ ${notifications.length} notification(s) created for quality rejection`);
-      console.log('✅ Test completed: Quality check → QUALITY_REJECTED with all requirements');
     });
   });
 
@@ -2551,7 +2324,6 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should create stock out → order status OUT_FOR_DELIVERY → notifications sent → activity logs created', async () => {
-      console.log('📤 Stage 1: Creating stock out transaction via API...');
       const stockOutData = {
         centerId: aggregationCenter.id,
         variety: 'KENYA',
@@ -2567,22 +2339,17 @@ describe('MarketplaceController (e2e)', () => {
         .send(stockOutData)
         .expect(201);
 
-      console.log('📤 Stage 2: Verifying stock out transaction creation...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.type).toBe('STOCK_OUT');
       expect(response.body.data.transactionNumber).toBeDefined();
       expect(response.body.data.buyerId).toBe(buyerUser.id);
-      console.log(`✅ Stock out transaction created: ${response.body.data.transactionNumber}`);
 
-      console.log('📤 Stage 3: Verifying order status updated to OUT_FOR_DELIVERY...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(updatedOrder?.status).toBe('OUT_FOR_DELIVERY');
-      console.log(`✅ Order status updated to: ${updatedOrder?.status}`);
 
-      console.log('📤 Stage 4: Verifying notifications were sent (2: buyer, transport provider)...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'ORDER',
@@ -2590,9 +2357,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThan(0);
-      console.log(`✅ ${notifications.length} notification(s) created for OUT_FOR_DELIVERY`);
 
-      console.log('📤 Stage 5: Verifying activity logs were created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           OR: [
@@ -2602,8 +2367,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThan(0);
-      console.log(`✅ ${activityLogs.length} activity log(s) created`);
-      console.log('✅ Test completed: Out for Delivery stage with all requirements');
     });
   });
 
@@ -2637,27 +2400,21 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should update order to COMPLETED → payment released → notifications sent → activity logs created', async () => {
-      console.log('✅ Stage 1: Updating order status to COMPLETED (payment released)...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${buyerToken}`)
         .send({ status: 'COMPLETED' })
         .expect(200);
 
-      console.log('✅ Stage 2: Verifying order status update...');
       expect(response.body.success).toBe(true);
       expect(response.body.data.status).toBe('COMPLETED');
-      console.log(`✅ Order status updated to: ${response.body.data.status}`);
 
-      console.log('✅ Stage 3: Verifying order has completedAt timestamp...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(updatedOrder?.status).toBe('COMPLETED');
       // Note: completedAt might be set by the service
-      console.log(`✅ Order finalized with status: ${updatedOrder?.status}`);
 
-      console.log('✅ Stage 4: Verifying notifications were sent (2: farmer, buyer)...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'ORDER',
@@ -2665,9 +2422,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThan(0);
-      console.log(`✅ ${notifications.length} notification(s) created for COMPLETED`);
 
-      console.log('✅ Stage 5: Verifying activity logs were created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'ORDER',
@@ -2680,8 +2435,6 @@ describe('MarketplaceController (e2e)', () => {
         log.metadata && (log.metadata as any).newStatus === 'COMPLETED'
       );
       expect(completedLog).toBeDefined();
-      console.log(`✅ ${activityLogs.length} activity log(s) created with COMPLETED transition`);
-      console.log('✅ Test completed: Completed stage with all requirements');
     });
   });
 
@@ -2743,7 +2496,6 @@ describe('MarketplaceController (e2e)', () => {
     });
 
     it('should complete full order lifecycle: ORDER_PLACED → ORDER_ACCEPTED → PAYMENT_SECURED → IN_TRANSIT → AT_AGGREGATION → QUALITY_CHECKED → QUALITY_APPROVED → OUT_FOR_DELIVERY → DELIVERED → COMPLETED', async () => {
-      console.log('🔄 Stage 1: Creating order (ORDER_PLACED)...');
       testOrder = await prisma.marketplaceOrder.create({
         data: {
           buyerId: buyerUser.id,
@@ -2761,33 +2513,25 @@ describe('MarketplaceController (e2e)', () => {
           statusHistory: [],
         },
       });
-      console.log(`✅ Order created: ${testOrder.orderNumber} with status: ${testOrder.status}`);
 
-      console.log('🔄 Stage 2: Order accepted (ORDER_ACCEPTED)...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${farmerToken}`)
         .send({ status: 'ORDER_ACCEPTED' })
         .expect(200);
-      console.log('✅ Order status: ORDER_ACCEPTED');
 
-      console.log('🔄 Stage 3: Payment secured (PAYMENT_SECURED)...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${buyerToken}`)
         .send({ status: 'PAYMENT_SECURED' })
         .expect(200);
-      console.log('✅ Order status: PAYMENT_SECURED');
 
-      console.log('🔄 Stage 4: In transit (IN_TRANSIT)...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${buyerToken}`)
         .send({ status: 'IN_TRANSIT' })
         .expect(200);
-      console.log('✅ Order status: IN_TRANSIT');
 
-      console.log('🔄 Stage 5: At aggregation (AT_AGGREGATION) - Stock in transaction created...');
       const stockInData = {
         centerId: aggregationCenter.id,
         variety: 'KENYA',
@@ -2804,23 +2548,19 @@ describe('MarketplaceController (e2e)', () => {
         .send(stockInData)
         .expect(201);
       stockTransaction = stockInResponse.body.data;
-      console.log(`✅ Stock in transaction created: ${stockTransaction.transactionNumber}`);
 
       // Verify order status updated to AT_AGGREGATION
       const orderAtAggregation = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(orderAtAggregation?.status).toBe('AT_AGGREGATION');
-      console.log(`✅ Order status updated to: ${orderAtAggregation?.status}`);
 
       // Verify inventory item created (if applicable)
       const inventoryItems = await prisma.inventoryItem.findMany({
         where: { centerId: aggregationCenter.id, batchId: testOrder.batchId },
       });
       if (inventoryItems.length > 0) {
-        console.log(`✅ ${inventoryItems.length} inventory item(s) created`);
       } else {
-        console.log(`ℹ️  Inventory items may be created separately or via database triggers`);
       }
 
       // Verify notifications (3: manager, buyer, farmer)
@@ -2830,9 +2570,7 @@ describe('MarketplaceController (e2e)', () => {
           entityId: testOrder.id,
         },
       });
-      console.log(`✅ ${notificationsAtAggregation.length} notification(s) created for AT_AGGREGATION`);
 
-      console.log('🔄 Stage 6: Quality checked (QUALITY_CHECKED) → Quality approved (QUALITY_APPROVED)...');
       const qualityCheckData = {
         centerId: aggregationCenter.id,
         orderId: testOrder.id,
@@ -2853,7 +2591,6 @@ describe('MarketplaceController (e2e)', () => {
         .send(qualityCheckData)
         .expect(201);
       qualityCheck = qualityCheckResponse.body.data;
-      console.log(`✅ Quality check created: ${qualityCheck.id} with score: ${qualityCheck.qualityScore}`);
 
       // Verify order status updated to QUALITY_APPROVED
       const orderQualityApproved = await prisma.marketplaceOrder.findUnique({
@@ -2862,7 +2599,6 @@ describe('MarketplaceController (e2e)', () => {
       expect(orderQualityApproved?.status).toBe('QUALITY_APPROVED');
       expect(orderQualityApproved?.qualityScore).toBe(85);
       expect(orderQualityApproved?.qualityFeedback).toBe('Quality approved');
-      console.log(`✅ Order status updated to: ${orderQualityApproved?.status} with quality score: ${orderQualityApproved?.qualityScore}`);
 
       // Verify notifications for quality check
       const notificationsQuality = await prisma.notification.findMany({
@@ -2873,9 +2609,7 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notificationsQuality.length).toBeGreaterThan(0);
-      console.log(`✅ ${notificationsQuality.length} notification(s) created for quality check`);
 
-      console.log('🔄 Stage 7: Out for delivery (OUT_FOR_DELIVERY) - Stock out transaction created...');
       // Update center stock first
       await prisma.aggregationCenter.update({
         where: { id: aggregationCenter.id },
@@ -2896,14 +2630,12 @@ describe('MarketplaceController (e2e)', () => {
         .set('Authorization', `Bearer ${aggregationManagerToken}`)
         .send(stockOutData)
         .expect(201);
-      console.log(`✅ Stock out transaction created: ${stockOutResponse.body.data.transactionNumber}`);
 
       // Verify order status updated to OUT_FOR_DELIVERY
       const orderOutForDelivery = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(orderOutForDelivery?.status).toBe('OUT_FOR_DELIVERY');
-      console.log(`✅ Order status updated to: ${orderOutForDelivery?.status}`);
 
       // Verify notifications for stock out
       const notificationsStockOut = await prisma.notification.findMany({
@@ -2912,15 +2644,12 @@ describe('MarketplaceController (e2e)', () => {
           entityId: testOrder.id,
         },
       });
-      console.log(`✅ ${notificationsStockOut.length} notification(s) created for OUT_FOR_DELIVERY`);
 
-      console.log('🔄 Stage 8: Delivered (DELIVERED)...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${buyerToken}`)
         .send({ status: 'DELIVERED' })
         .expect(200);
-      console.log('✅ Order status: DELIVERED');
 
       // Verify notifications for delivery
       const notificationsDelivered = await prisma.notification.findMany({
@@ -2929,15 +2658,12 @@ describe('MarketplaceController (e2e)', () => {
           entityId: testOrder.id,
         },
       });
-      console.log(`✅ ${notificationsDelivered.length} notification(s) created for DELIVERED`);
 
-      console.log('🔄 Stage 9: Completed (COMPLETED)...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/marketplace/orders/${testOrder.id}/status`)
         .set('Authorization', `Bearer ${buyerToken}`)
         .send({ status: 'COMPLETED' })
         .expect(200);
-      console.log('✅ Order status: COMPLETED');
 
       // Verify final order state
       const finalOrder = await prisma.marketplaceOrder.findUnique({
@@ -2947,8 +2673,6 @@ describe('MarketplaceController (e2e)', () => {
       expect(finalOrder?.statusHistory).toBeDefined();
       expect(Array.isArray(finalOrder?.statusHistory)).toBe(true);
       expect(finalOrder?.statusHistory.length).toBeGreaterThanOrEqual(9);
-      console.log(`✅ Final order status: ${finalOrder?.status}`);
-      console.log(`✅ Status history contains ${finalOrder?.statusHistory.length} entries`);
 
       // Verify all activity logs
       const allActivityLogs = await prisma.activityLog.findMany({
@@ -2958,13 +2682,10 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(allActivityLogs.length).toBeGreaterThan(0);
-      console.log(`✅ ${allActivityLogs.length} activity log(s) created throughout lifecycle`);
 
-      console.log('✅ Test completed: Full order lifecycle with all stages');
     });
 
     it('should handle quality rejection flow: AT_AGGREGATION → QUALITY_CHECKED → QUALITY_REJECTED', async () => {
-      console.log('🔄 Stage 1: Creating order and setting to AT_AGGREGATION...');
       testOrder = await prisma.marketplaceOrder.create({
         data: {
           buyerId: buyerUser.id,
@@ -3000,9 +2721,7 @@ describe('MarketplaceController (e2e)', () => {
           createdBy: aggregationManagerUser.id,
         },
       });
-      console.log(`✅ Order created at AT_AGGREGATION: ${testOrder.orderNumber}`);
 
-      console.log('🔄 Stage 2: Quality check with low score (QUALITY_REJECTED)...');
       const qualityCheckData = {
         centerId: aggregationCenter.id,
         orderId: testOrder.id,
@@ -3027,7 +2746,6 @@ describe('MarketplaceController (e2e)', () => {
         console.error('❌ Error body:', JSON.stringify(qualityCheckResponse.body, null, 2));
       }
       expect(qualityCheckResponse.status).toBe(201);
-      console.log(`✅ Quality check created with score: ${qualityCheckResponse.body.data.qualityScore}`);
 
       // Verify order status updated to QUALITY_REJECTED
       const orderRejected = await prisma.marketplaceOrder.findUnique({
@@ -3037,7 +2755,6 @@ describe('MarketplaceController (e2e)', () => {
       expect(orderRejected?.qualityScore).toBe(65);
       expect(orderRejected?.qualityFeedback).toBeDefined();
       expect(orderRejected?.qualityFeedback).toMatch(/Quality rejected|Quality score below threshold/i);
-      console.log(`✅ Order status updated to: ${orderRejected?.status} with quality score: ${orderRejected?.qualityScore}`);
 
       // Verify notifications for quality rejection
       const notifications = await prisma.notification.findMany({
@@ -3048,7 +2765,6 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThan(0);
-      console.log(`✅ ${notifications.length} notification(s) created for quality rejection`);
 
       // Verify activity logs
       const activityLogs = await prisma.activityLog.findMany({
@@ -3059,30 +2775,21 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThan(0);
-      console.log(`✅ ${activityLogs.length} activity log(s) created for quality rejection`);
-      console.log('✅ Test completed: Quality rejection flow');
     });
   });
 
   describe('Statistics', () => {
     it('should return marketplace statistics', async () => {
-      console.log('📊 Stage 1: Fetching marketplace statistics via API...');
       const response = await request(app.getHttpServer())
         .get(`/${apiPrefix}/marketplace/stats`)
         .set('Authorization', `Bearer ${buyerToken}`)
         .expect(200);
 
-      console.log('📊 Stage 2: Verifying statistics response structure...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.totalListings).toBeDefined();
       expect(response.body.data.totalOrders).toBeDefined();
       expect(response.body.data.totalRFQs).toBeDefined();
-      console.log(`✅ Statistics retrieved:`);
-      console.log(`   - Total Listings: ${response.body.data.totalListings}`);
-      console.log(`   - Total Orders: ${response.body.data.totalOrders}`);
-      console.log(`   - Total RFQs: ${response.body.data.totalRFQs}`);
-      console.log('✅ Test completed: Marketplace statistics retrieval');
     });
   });
 });

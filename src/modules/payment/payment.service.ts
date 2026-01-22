@@ -177,6 +177,53 @@ export class PaymentService {
       }
     }
 
+    // Create notifications for payment status changes
+    if (newStatus === 'SECURED' && oldStatus !== 'SECURED') {
+      const notifications: Array<{
+        userId: string;
+        type: string;
+        title: string;
+        message: string;
+        priority: 'LOW' | 'MEDIUM' | 'HIGH';
+        entityType: string;
+        entityId: string;
+        actionUrl: string;
+        actionLabel: string;
+        metadata: any;
+      }> = [];
+      if (payment.payerId) {
+        notifications.push({
+          userId: payment.payerId,
+          type: 'PAYMENT',
+          title: 'Payment Secured',
+          message: `Payment #${payment.referenceNumber} has been secured. Order status updated to PAYMENT_SECURED`,
+          priority: 'HIGH',
+          entityType: 'PAYMENT',
+          entityId: payment.id,
+          actionUrl: `/payments/${payment.id}`,
+          actionLabel: 'View Payment',
+          metadata: { referenceNumber: payment.referenceNumber, orderId: payment.orderId },
+        });
+      }
+      if (payment.payeeId) {
+        notifications.push({
+          userId: payment.payeeId,
+          type: 'PAYMENT',
+          title: 'Payment Secured',
+          message: `Payment #${payment.referenceNumber} has been secured`,
+          priority: 'HIGH',
+          entityType: 'PAYMENT',
+          entityId: payment.id,
+          actionUrl: `/payments/${payment.id}`,
+          actionLabel: 'View Payment',
+          metadata: { referenceNumber: payment.referenceNumber, orderId: payment.orderId },
+        });
+      }
+      if (notifications.length > 0) {
+        await this.notificationHelperService.createNotifications(notifications);
+      }
+    }
+
     // Create activity log
     await this.activityLogService.createActivityLog({
       userId: payment.payerId || payment.payeeId || '',
@@ -270,7 +317,7 @@ export class PaymentService {
       );
     }
 
-    return this.prisma.escrowTransaction.update({
+    const updatedEscrow = await this.prisma.escrowTransaction.update({
       where: { id },
       data: {
         status: 'RELEASED',
@@ -290,6 +337,24 @@ export class PaymentService {
         },
       },
     });
+
+    // Create notifications
+    if (escrow.farmerId) {
+      await this.notificationHelperService.createNotification({
+        userId: escrow.farmerId,
+        type: 'PAYMENT',
+        title: 'Payment Released',
+        message: `Payment released for order #${escrow.order?.orderNumber || 'N/A'}. Amount: KES ${escrow.amount}`,
+        priority: 'HIGH',
+        entityType: 'ESCROW',
+        entityId: escrow.id,
+        actionUrl: `/payments/escrow/${escrow.id}`,
+        actionLabel: 'View Escrow',
+        metadata: { orderId: escrow.orderId, amount: escrow.amount },
+      });
+    }
+
+    return updatedEscrow;
   }
 
   async disputeEscrow(id: string, data: DisputeEscrowDto, userId: string) {
@@ -299,7 +364,7 @@ export class PaymentService {
       throw new BadRequestException('Escrow is already disputed or refunded');
     }
 
-    return this.prisma.escrowTransaction.update({
+    const updatedEscrow = await this.prisma.escrowTransaction.update({
       where: { id },
       data: {
         status: 'DISPUTED',
@@ -321,6 +386,56 @@ export class PaymentService {
         },
       },
     });
+
+    // Create notifications for both parties
+    const disputeNotifications: Array<{
+      userId: string;
+      type: string;
+      title: string;
+      message: string;
+      priority: 'LOW' | 'MEDIUM' | 'HIGH';
+      entityType: string;
+      entityId: string;
+      actionUrl: string;
+      actionLabel: string;
+      metadata: any;
+    }> = [];
+    
+    if (escrow.buyerId) {
+      disputeNotifications.push({
+        userId: escrow.buyerId,
+        type: 'PAYMENT',
+        title: 'Dispute Raised',
+        message: `Dispute raised for order #${escrow.order?.orderNumber || 'N/A'}`,
+        priority: 'HIGH',
+        entityType: 'ESCROW',
+        entityId: escrow.id,
+        actionUrl: `/payments/escrow/${escrow.id}`,
+        actionLabel: 'View Escrow',
+        metadata: { orderId: escrow.orderId, reason: data.reason },
+      });
+    }
+    
+    if (escrow.farmerId) {
+      disputeNotifications.push({
+        userId: escrow.farmerId,
+        type: 'PAYMENT',
+        title: 'Dispute Raised',
+        message: `Dispute raised for order #${escrow.order?.orderNumber || 'N/A'}`,
+        priority: 'HIGH',
+        entityType: 'ESCROW',
+        entityId: escrow.id,
+        actionUrl: `/payments/escrow/${escrow.id}`,
+        actionLabel: 'View Escrow',
+        metadata: { orderId: escrow.orderId, reason: data.reason },
+      });
+    }
+    
+    if (disputeNotifications.length > 0) {
+      await this.notificationHelperService.createNotifications(disputeNotifications);
+    }
+
+    return updatedEscrow;
   }
 
   // ============ Payment History ============

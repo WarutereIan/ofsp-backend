@@ -464,7 +464,7 @@ export class InputService {
           type: 'ORDER',
           title: statusInfo.title,
           message: statusInfo.message,
-          priority: ['DELIVERED', 'COMPLETED'].includes(data.status) ? 'HIGH' : 'MEDIUM',
+          priority: (['DELIVERED', 'COMPLETED'].includes(data.status) ? 'HIGH' : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
           entityType: 'INPUT_ORDER',
           entityId: updatedOrder.id,
           actionUrl: `/inputs/orders/${updatedOrder.id}`,
@@ -492,7 +492,7 @@ export class InputService {
             : data.status === 'COMPLETED'
             ? `Order #${updatedOrder.orderNumber} completed. Payment received`
             : statusInfo.message,
-          priority: ['DELIVERED', 'COMPLETED'].includes(data.status) ? 'HIGH' : 'MEDIUM',
+          priority: (['DELIVERED', 'COMPLETED'].includes(data.status) ? 'HIGH' : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
           entityType: 'INPUT_ORDER',
           entityId: updatedOrder.id,
           actionUrl: `/inputs/orders/${updatedOrder.id}`,

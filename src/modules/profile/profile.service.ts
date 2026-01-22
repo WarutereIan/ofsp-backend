@@ -44,7 +44,7 @@ export class ProfileService {
       where.county = filters.county;
     }
     if (filters?.subcounty) {
-      where.subcounty = filters.subcounty;
+      where.subCounty = filters.subcounty; // Prisma schema uses subCounty (camelCase)
     }
     if (filters?.ward) {
       where.ward = filters.ward;
@@ -75,9 +75,16 @@ export class ProfileService {
   }
 
   async update(userId: string, data: UpdateProfileDto) {
+    // Map DTO field names to Prisma schema field names
+    const updateData: any = { ...data };
+    if (updateData.subcounty !== undefined) {
+      updateData.subCounty = updateData.subcounty;
+      delete updateData.subcounty;
+    }
+
     return this.prisma.profile.update({
       where: { userId },
-      data,
+      data: updateData,
       include: {
         user: {
           select: {

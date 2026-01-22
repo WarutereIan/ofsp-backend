@@ -586,4 +586,228 @@ describe('AggregationController (e2e)', () => {
       expect(response.body.data.utilizationRate).toBeDefined();
     });
   });
+
+  describe('Satellite to Main Center Transfer', () => {
+    let satelliteCenter: any;
+    let mainCenter: any;
+    let stockInAtSatellite: any;
+    let stockOutFromSatellite: any;
+
+    beforeAll(async () => {
+      // Create satellite center
+      satelliteCenter = await prisma.aggregationCenter.create({
+        data: {
+          name: 'Satellite Center Test',
+          code: 'AC-SAT-TEST-001',
+          location: 'Westlands',
+          county: 'Nairobi',
+          subCounty: 'Westlands',
+          centerType: 'SATELLITE',
+          totalCapacity: 500,
+          currentStock: 0,
+          managerId: managerUser.id,
+          managerName: 'Test Manager',
+          managerPhone: managerUser.phone || '+254712345678',
+          status: 'OPERATIONAL',
+        },
+      });
+
+      // Create main center
+      mainCenter = await prisma.aggregationCenter.create({
+        data: {
+          name: 'Main Center Test',
+          code: 'AC-MAIN-TEST-001',
+          location: 'Parklands',
+          county: 'Nairobi',
+          subCounty: 'Westlands',
+          centerType: 'MAIN',
+          totalCapacity: 2000,
+          currentStock: 0,
+          managerId: managerUser.id,
+          managerName: 'Test Manager',
+          managerPhone: managerUser.phone || '+254712345678',
+          status: 'OPERATIONAL',
+        },
+      });
+    });
+
+    afterAll(async () => {
+      // Cleanup
+      if (satelliteCenter) {
+        await prisma.stockTransaction.deleteMany({ where: { centerId: satelliteCenter.id } });
+        await prisma.qualityCheck.deleteMany({ where: { centerId: satelliteCenter.id } });
+        await prisma.inventoryItem.deleteMany({ where: { centerId: satelliteCenter.id } });
+        await prisma.aggregationCenter.delete({ where: { id: satelliteCenter.id } });
+      }
+      if (mainCenter) {
+        await prisma.stockTransaction.deleteMany({ where: { centerId: mainCenter.id } });
+        await prisma.qualityCheck.deleteMany({ where: { centerId: mainCenter.id } });
+        await prisma.inventoryItem.deleteMany({ where: { centerId: mainCenter.id } });
+        await prisma.aggregationCenter.delete({ where: { id: mainCenter.id } });
+      }
+    });
+
+    it('should transfer stock from satellite to main center → create TRANSFER transaction → auto-create quality check → send notifications', async () => {
+      const stockInDto = {
+        centerId: satelliteCenter.id,
+        variety: 'KENYA',
+        quantity: 150,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        farmerId: farmerUser.id,
+        farmerName: 'Test Farmer',
+        batchId: 'BATCH-TRANSFER-001',
+      };
+
+      const stockInResponse = await request(app.getHttpServer())
+        .post(`/${apiPrefix}/aggregation/stock-in`)
+        .set('Authorization', `Bearer ${managerToken}`)
+        .send(stockInDto)
+        .expect(201);
+
+      stockInAtSatellite = stockInResponse.body.data;
+      expect(stockInAtSatellite.type).toBe('STOCK_IN');
+      expect(stockInAtSatellite.centerId).toBe(satelliteCenter.id);
+
+      // Update satellite center stock
+      await prisma.aggregationCenter.update({
+        where: { id: satelliteCenter.id },
+        data: { currentStock: 150 },
+      });
+
+      const stockOutDto = {
+        centerId: satelliteCenter.id,
+        variety: 'KENYA',
+        quantity: 150,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        batchId: 'BATCH-TRANSFER-001',
+        notes: 'Transfer to main center',
+      };
+
+      const stockOutResponse = await request(app.getHttpServer())
+        .post(`/${apiPrefix}/aggregation/stock-out`)
+        .set('Authorization', `Bearer ${managerToken}`)
+        .send(stockOutDto)
+        .expect(201);
+
+      stockOutFromSatellite = stockOutResponse.body.data;
+      expect(stockOutFromSatellite.type).toBe('STOCK_OUT');
+
+      const transferStockInDto = {
+        centerId: mainCenter.id,
+        sourceCenterId: satelliteCenter.id,
+        transferTransactionId: stockOutFromSatellite.id,
+        variety: 'KENYA',
+        quantity: 150,
+        qualityGrade: 'A',
+        pricePerKg: 50,
+        farmerId: farmerUser.id,
+        farmerName: 'Test Farmer',
+        batchId: 'BATCH-TRANSFER-001',
+        notes: 'Received from satellite center',
+      };
+
+      const transferResponse = await request(app.getHttpServer())
+        .post(`/${apiPrefix}/aggregation/stock-in`)
+        .set('Authorization', `Bearer ${managerToken}`)
+        .send(transferStockInDto)
+        .expect(201);
+
+      const transferTransaction = transferResponse.body.data;
+      expect(transferTransaction.type).toBe('TRANSFER');
+      expect(transferTransaction.centerId).toBe(mainCenter.id);
+      expect(transferTransaction.notes).toContain('Transfer from Satellite Center Test');
+
+      const qualityChecks = await prisma.qualityCheck.findMany({
+        where: {
+          centerId: mainCenter.id,
+          transactionId: transferTransaction.id,
+        },
+      });
+
+      expect(qualityChecks.length).toBeGreaterThan(0);
+      const qualityCheck = qualityChecks[0];
+      expect(qualityCheck.transactionId).toBe(transferTransaction.id);
+      expect(qualityCheck.centerId).toBe(mainCenter.id);
+      expect(qualityCheck.qualityScore).toBe(70); // Default passing score
+      expect(qualityCheck.notes).toContain('Secondary quality check required');
+      expect(qualityCheck.notes.toLowerCase()).toContain('satellite');
+
+      const notifications = await prisma.notification.findMany({
+        where: {
+          userId: managerUser.id,
+          entityType: 'STOCK_TRANSACTION',
+          entityId: transferTransaction.id,
+        },
+      });
+
+      expect(notifications.length).toBeGreaterThan(0);
+      const qualityCheckNotification = notifications.find(
+        (n) => n.type === 'QUALITY_CHECK' && n.title === 'Secondary Quality Check Required',
+      );
+      expect(qualityCheckNotification).toBeDefined();
+      expect(qualityCheckNotification?.priority).toBe('HIGH');
+
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'STOCK_TRANSACTION',
+          entityId: transferTransaction.id,
+        },
+      });
+
+      expect(activityLogs.length).toBeGreaterThan(0);
+      const transferLog = activityLogs.find((log) => log.action === 'STOCK_TRANSFER_RECEIVED');
+      expect(transferLog).toBeDefined();
+      expect(transferLog?.metadata).toHaveProperty('isTransfer', true);
+      expect(transferLog?.metadata).toHaveProperty('sourceCenterId', satelliteCenter.id);
+
+    });
+
+    it('should reject transfer if source center is not a SATELLITE', async () => {
+      const invalidTransferDto = {
+        centerId: mainCenter.id,
+        sourceCenterId: mainCenter.id, // Trying to transfer from main to main (invalid)
+        variety: 'KENYA',
+        quantity: 50,
+        qualityGrade: 'A',
+      };
+
+      await request(app.getHttpServer())
+        .post(`/${apiPrefix}/aggregation/stock-in`)
+        .set('Authorization', `Bearer ${managerToken}`)
+        .send(invalidTransferDto)
+        .expect(400);
+    });
+
+    it('should create regular STOCK_IN (not TRANSFER) when destination is not MAIN center', async () => {
+      // When sourceCenterId is provided but destination is not MAIN, it should create regular STOCK_IN
+      const regularStockInDto = {
+        centerId: satelliteCenter.id, // Satellite center (not MAIN)
+        sourceCenterId: satelliteCenter.id, // Even if source is provided, it won't be a transfer
+        variety: 'KENYA',
+        quantity: 50,
+        qualityGrade: 'A',
+        batchId: 'BATCH-REGULAR-001',
+      };
+
+      const response = await request(app.getHttpServer())
+        .post(`/${apiPrefix}/aggregation/stock-in`)
+        .set('Authorization', `Bearer ${managerToken}`)
+        .send(regularStockInDto)
+        .expect(201);
+
+      // Should be STOCK_IN, not TRANSFER, because destination is not MAIN
+      expect(response.body.data.type).toBe('STOCK_IN');
+      
+      // Should not create quality check automatically (only for transfers to MAIN)
+      const qualityChecks = await prisma.qualityCheck.findMany({
+        where: {
+          centerId: satelliteCenter.id,
+          transactionId: response.body.data.id,
+        },
+      });
+      expect(qualityChecks.length).toBe(0);
+    });
+  });
 });

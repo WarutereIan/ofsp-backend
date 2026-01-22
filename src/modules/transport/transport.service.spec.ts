@@ -387,6 +387,7 @@ describe('TransportService', () => {
         updatedBy: 'user-2',
         createdAt: new Date(),
       });
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
 
       const trackingData = {
         location: 'Location A',
@@ -417,6 +418,48 @@ describe('TransportService', () => {
       await expect(
         service.addTrackingUpdate('transport-1', trackingData, 'user-3'),
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should create activity log when tracking update is added', async () => {
+      const requestWithProvider = {
+        ...mockTransportRequest,
+        providerId: 'user-2',
+      };
+      prisma.transportRequest.findUnique = jest.fn().mockResolvedValue(requestWithProvider);
+      prisma.trackingUpdate.create = jest.fn().mockResolvedValue({
+        id: 'tracking-1',
+        requestId: 'transport-1',
+        location: 'Location A',
+        coordinates: { lat: -1.2921, lng: 36.8219 },
+        status: 'IN_TRANSIT',
+        notes: 'On the way',
+        updatedBy: 'user-2',
+        createdAt: new Date(),
+      });
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      const trackingData = {
+        location: 'Location A',
+        coordinates: { lat: -1.2921, lng: 36.8219 },
+        status: 'IN_TRANSIT',
+        notes: 'On the way',
+      };
+
+      await service.addTrackingUpdate('transport-1', trackingData, 'user-2');
+
+      expect(activityLogService.createActivityLog).toHaveBeenCalledTimes(1);
+      expect(activityLogService.createActivityLog).toHaveBeenCalledWith({
+        userId: 'user-2',
+        action: 'TRANSPORT_TRACKING_UPDATE',
+        entityType: 'TRANSPORT',
+        entityId: 'transport-1',
+        metadata: {
+          requestNumber: 'TR-20250121-000001',
+          location: 'Location A',
+          status: 'IN_TRANSIT',
+          trackingUpdateId: 'tracking-1',
+        },
+      });
     });
   });
 });

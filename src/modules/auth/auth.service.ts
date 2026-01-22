@@ -130,26 +130,69 @@ export class AuthService {
 
   async generateTokens(userId: string, email: string, role: UserRole) {
     const payload = { sub: userId, email, role };
+    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
+    const refreshExpiration = this.configService.get<string>('JWT_REFRESH_EXPIRATION', '30d');
+
+    if (!refreshSecret) {
+      throw new Error('JWT_REFRESH_SECRET is not configured');
+    }
+
+    // Add jti (JWT ID) to refresh token payload to ensure uniqueness
+    // This prevents token collision when tokens are generated within the same second
+    const refreshPayload = { 
+      ...payload, 
+      jti: `${userId}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}` 
+    };
 
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(payload),
-      this.jwtService.signAsync(payload, {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRATION', '30d'),
+      this.jwtService.signAsync(refreshPayload, {
+        secret: refreshSecret,
+        expiresIn: refreshExpiration,
       } as any),
     ]);
 
-    // Store refresh token
+    // Calculate expiration date from the expiration string (e.g., '30d' = 30 days)
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30);
+    const expirationDays = parseInt(refreshExpiration.replace('d', '')) || 30;
+    expiresAt.setDate(expiresAt.getDate() + expirationDays);
 
-    await this.prisma.refreshToken.create({
-      data: {
-        token: refreshToken,
-        userId,
-        expiresAt,
-      },
-    });
+    try {
+      await this.prisma.refreshToken.create({
+        data: {
+          token: refreshToken,
+          userId,
+          expiresAt,
+        },
+      });
+    } catch (error: any) {
+      // Handle unique constraint error (extremely rare but possible)
+      if (error?.code === 'P2002' && error?.meta?.target?.includes('token')) {
+        // Token already exists - regenerate with new jti and retry once
+        const retryPayload = { 
+          ...payload, 
+          jti: `${userId}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}-retry` 
+        };
+        const newRefreshToken = await this.jwtService.signAsync(retryPayload, {
+          secret: refreshSecret,
+          expiresIn: refreshExpiration,
+        } as any);
+        
+        await this.prisma.refreshToken.create({
+          data: {
+            token: newRefreshToken,
+            userId,
+            expiresAt,
+          },
+        });
+        
+        return {
+          accessToken,
+          refreshToken: newRefreshToken,
+        };
+      }
+      throw error;
+    }
 
     return {
       accessToken,
@@ -158,9 +201,15 @@ export class AuthService {
   }
 
   async refreshTokens(refreshToken: string) {
+    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
+    
+    if (!refreshSecret) {
+      throw new UnauthorizedException('JWT_REFRESH_SECRET is not configured');
+    }
+
     try {
       const payload = await this.jwtService.verifyAsync(refreshToken, {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+        secret: refreshSecret,
       });
 
       const storedToken = await this.prisma.refreshToken.findUnique({
@@ -168,24 +217,47 @@ export class AuthService {
         include: { user: true },
       });
 
-      if (!storedToken || storedToken.expiresAt < new Date()) {
+      if (!storedToken) {
         throw new UnauthorizedException('Invalid refresh token');
       }
 
-      // Generate new tokens
-      const tokens = await this.generateTokens(
-        storedToken.userId,
-        storedToken.user.email,
-        storedToken.user.role,
-      );
+      if (storedToken.expiresAt < new Date()) {
+        throw new UnauthorizedException('Refresh token has expired');
+      }
 
-      // Delete old refresh token
+      // Store user info before deleting token
+      const userId = storedToken.userId;
+      const userEmail = storedToken.user.email;
+      const userRole = storedToken.user.role;
+
+      // Delete old refresh token first to avoid unique constraint conflicts
       await this.prisma.refreshToken.delete({
         where: { token: refreshToken },
       });
 
+      // Generate new tokens after deleting old one
+      const tokens = await this.generateTokens(
+        userId,
+        userEmail,
+        userRole,
+      );
+
       return tokens;
     } catch (error) {
+      // If it's already an UnauthorizedException, re-throw it
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      // For JWT verification errors, check the error type
+      const errorMessage = error?.message || 'Invalid refresh token';
+      // In development/test, include more details
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Refresh token verification failed:', {
+          error: errorMessage,
+          errorName: error?.name,
+          tokenPreview: refreshToken?.substring(0, 20) + '...',
+        });
+      }
       throw new UnauthorizedException('Invalid refresh token');
     }
   }

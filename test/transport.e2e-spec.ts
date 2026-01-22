@@ -223,7 +223,6 @@ describe('TransportController (e2e)', () => {
 
   describe('Transport Requests Lifecycle (Standalone)', () => {
     it('should create standalone PRODUCE_PICKUP transport request → activity log created', async () => {
-      console.log('🚚 Stage 1: Preparing standalone PRODUCE_PICKUP transport request data...');
       const requestData = {
         type: 'PRODUCE_PICKUP', // DTO now uses Prisma enum values directly
         pickupLocation: 'Farm Location',
@@ -236,23 +235,18 @@ describe('TransportController (e2e)', () => {
         weight: 100,
         description: 'Transport OFSP from farm to center',
       };
-      console.log(`✅ Request data prepared: ${requestData.type} from ${requestData.pickupLocation} to ${requestData.deliveryLocation}`);
 
-      console.log('🚚 Stage 2: Creating transport request via API...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/transport/requests`)
         .set('Authorization', `Bearer ${farmerToken}`)
         .send(requestData)
         .expect(201);
 
-      console.log('🚚 Stage 3: Verifying transport request creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.requestNumber).toBeDefined();
       expect(response.body.data.status).toBe('PENDING');
-      console.log(`✅ Transport request created: ${response.body.data.requestNumber}`);
 
-      console.log('🚚 Stage 4: Verifying activity log was created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'TRANSPORT',
@@ -261,12 +255,9 @@ describe('TransportController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThanOrEqual(1);
-      console.log(`✅ ${activityLogs.length} activity log(s) created for transport request`);
-      console.log('✅ Test completed: Transport request creation with activity log');
     });
 
     it('should accept standalone PRODUCE_PICKUP request → notifications sent', async () => {
-      console.log('🚚 Stage 1: Creating initial standalone PRODUCE_PICKUP transport request...');
       const transportRequest = await prisma.transportRequest.create({
         data: {
           requesterId: farmerUser.id,
@@ -282,21 +273,16 @@ describe('TransportController (e2e)', () => {
           status: 'PENDING',
         },
       });
-      console.log(`✅ Transport request created: ${transportRequest.requestNumber} with status: ${transportRequest.status}`);
 
-      console.log('🚚 Stage 2: Accepting transport request via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/accept`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .expect(200);
 
-      console.log('🚚 Stage 3: Verifying acceptance response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data.status).toBe('ACCEPTED');
       expect(response.body.data.providerId).toBe(transportProviderUser.id);
-      console.log(`✅ Transport request accepted by provider: ${transportProviderUser.id}`);
 
-      console.log('🚚 Stage 4: Verifying notifications were created...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'TRANSPORT',
@@ -305,12 +291,9 @@ describe('TransportController (e2e)', () => {
         },
       });
       // Note: acceptTransportRequest doesn't currently create notifications, but should per lifecycle
-      console.log(`ℹ️  ${notifications.length} notification(s) found (implementation may need enhancement)`);
-      console.log('✅ Test completed: Transport request acceptance');
     });
 
     it('should update standalone PRODUCE_PICKUP status → notifications sent → activity logs created → order status updated', async () => {
-      console.log('🚚 Stage 1: Creating test order for transport integration...');
       testOrder = await prisma.marketplaceOrder.create({
         data: {
           buyerId: buyerUser.id,
@@ -327,9 +310,7 @@ describe('TransportController (e2e)', () => {
           statusHistory: [],
         },
       });
-      console.log(`✅ Test order created: ${testOrder.orderNumber} with status: ${testOrder.status}`);
 
-      console.log('🚚 Stage 2: Creating transport request linked to order...');
       const transportRequest = await prisma.transportRequest.create({
         data: {
           requesterId: farmerUser.id,
@@ -347,28 +328,21 @@ describe('TransportController (e2e)', () => {
           providerId: transportProviderUser.id,
         },
       });
-      console.log(`✅ Transport request created: ${transportRequest.requestNumber} linked to order: ${testOrder.id}`);
 
-      console.log('🚚 Stage 3: Updating transport status to IN_TRANSIT_PICKUP via API...');
       const response = await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .send({ status: 'IN_TRANSIT_PICKUP' }) // DTO now uses Prisma enum values directly
         .expect(200);
 
-      console.log('🚚 Stage 4: Verifying status update response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data.status).toBe('IN_TRANSIT_PICKUP');
-      console.log(`✅ Transport status updated to: ${response.body.data.status}`);
 
-      console.log('🚚 Stage 5: Verifying order status was updated to IN_TRANSIT...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(updatedOrder?.status).toBe('IN_TRANSIT');
-      console.log(`✅ Order status updated to: ${updatedOrder?.status}`);
 
-      console.log('🚚 Stage 6: Verifying notifications were created...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'TRANSPORT',
@@ -377,9 +351,7 @@ describe('TransportController (e2e)', () => {
         },
       });
       expect(notifications.length).toBeGreaterThan(0);
-      console.log(`✅ ${notifications.length} notification(s) created for status change`);
 
-      console.log('🚚 Stage 7: Verifying activity log was created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'TRANSPORT',
@@ -392,12 +364,9 @@ describe('TransportController (e2e)', () => {
         oldStatus: 'ACCEPTED',
         newStatus: 'IN_TRANSIT_PICKUP',
       });
-      console.log(`✅ Activity log created with oldStatus: ACCEPTED, newStatus: IN_TRANSIT_PICKUP`);
-      console.log('✅ Test completed: Transport status update with notifications, activity logs, and order status update');
     });
 
     it('should complete full standalone PRODUCE_PICKUP lifecycle (PENDING → ACCEPTED → IN_TRANSIT → DELIVERED → COMPLETED)', async () => {
-      console.log('🚚 Stage 1: Creating initial standalone PRODUCE_PICKUP transport request...');
       const transportRequest = await prisma.transportRequest.create({
         data: {
           requesterId: farmerUser.id,
@@ -413,16 +382,12 @@ describe('TransportController (e2e)', () => {
           status: 'PENDING',
         },
       });
-      console.log(`✅ Transport request created: ${transportRequest.requestNumber} with status: ${transportRequest.status}`);
 
-      console.log('🚚 Stage 2: Transitioning to ACCEPTED...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/accept`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .expect(200);
-      console.log('✅ Transport request status updated to: ACCEPTED');
 
-      console.log('🚚 Stage 3: Transitioning to IN_TRANSIT_PICKUP...');
       const transitResponse = await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
@@ -432,29 +397,22 @@ describe('TransportController (e2e)', () => {
         console.error('❌ Status update failed:', transitResponse.status, transitResponse.body);
       }
       expect(transitResponse.status).toBe(200);
-      console.log('✅ Transport request status updated to: IN_TRANSIT_PICKUP');
 
-      console.log('🚚 Stage 4: Transitioning to DELIVERED...');
       const deliveredResponse = await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .send({ status: 'DELIVERED' })
         .expect(200);
-      console.log('✅ Transport request status updated to: DELIVERED');
 
-      console.log('🚚 Stage 5: Verifying final transport state...');
       const finalRequest = await prisma.transportRequest.findUnique({
         where: { id: transportRequest.id },
       });
       expect(finalRequest?.status).toBe('DELIVERED');
-      console.log(`✅ Final transport status: ${finalRequest?.status}`);
-      console.log('✅ Test completed: Full transport lifecycle (PENDING → ACCEPTED → IN_TRANSIT_PICKUP → DELIVERED)');
     });
   });
 
   describe('Tracking Updates', () => {
     it('should add tracking updates for PRODUCE_PICKUP → activity logs created', async () => {
-      console.log('🚚 Stage 1: Creating PRODUCE_PICKUP transport request with provider...');
       const transportRequest = await prisma.transportRequest.create({
         data: {
           requesterId: farmerUser.id,
@@ -471,9 +429,7 @@ describe('TransportController (e2e)', () => {
           providerId: transportProviderUser.id,
         },
       });
-      console.log(`✅ Transport request created: ${transportRequest.requestNumber}`);
 
-      console.log('🚚 Stage 2: Adding tracking update via API...');
       const trackingData = {
         location: 'Midway Location',
         coordinates: '-1.2976,36.8170',
@@ -486,21 +442,15 @@ describe('TransportController (e2e)', () => {
         .send(trackingData)
         .expect(201);
 
-      console.log('🚚 Stage 3: Verifying tracking update response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.location).toBe(trackingData.location);
-      console.log(`✅ Tracking update added: ${response.body.data.location}`);
 
-      console.log('🚚 Stage 4: Verifying tracking update in database...');
       const trackingUpdates = await prisma.trackingUpdate.findMany({
         where: { requestId: transportRequest.id },
       });
       expect(trackingUpdates.length).toBeGreaterThan(0);
-      console.log(`✅ ${trackingUpdates.length} tracking update(s) found`);
       // Note: addTrackingUpdate doesn't currently create activity logs, but should per lifecycle
-      console.log('ℹ️  Activity log creation for tracking updates may need enhancement');
-      console.log('✅ Test completed: Tracking update addition');
     });
   });
 
@@ -548,7 +498,6 @@ describe('TransportController (e2e)', () => {
     });
 
     it('should create pickup schedule (DRAFT status)', async () => {
-      console.log('🚚 Stage 1: Preparing pickup schedule data...');
       const scheduleData = {
         aggregationCenterId: testCenter.id,
         route: 'Route A',
@@ -557,16 +506,13 @@ describe('TransportController (e2e)', () => {
         totalCapacity: 5000,
         vehicleType: 'TRUCK',
       };
-      console.log(`✅ Schedule data prepared: ${scheduleData.route} to center ${testCenter.name}`);
 
-      console.log('🚚 Stage 2: Creating pickup schedule via API...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/transport/pickup-schedules`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .send(scheduleData)
         .expect(201);
 
-      console.log('🚚 Stage 3: Verifying schedule creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.scheduleNumber).toBeDefined();
@@ -574,21 +520,16 @@ describe('TransportController (e2e)', () => {
       expect(response.body.data.totalCapacity).toBe(scheduleData.totalCapacity);
       expect(response.body.data.availableCapacity).toBe(scheduleData.totalCapacity);
       expect(response.body.data.usedCapacity).toBe(0);
-      console.log(`✅ Pickup schedule created: ${response.body.data.scheduleNumber} with status: ${response.body.data.status}`);
       
-      console.log('🚚 Stage 4: Verifying activity log was created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'TRANSPORT',
           entityId: response.body.data.id,
         },
       });
-      console.log(`ℹ️  ${activityLogs.length} activity log(s) found (implementation may need enhancement for schedule creation)`);
-      console.log('✅ Test completed: Pickup schedule creation (DRAFT)');
     });
 
     it('should publish pickup schedule (DRAFT → PUBLISHED)', async () => {
-      console.log('🚚 Stage 1: Creating pickup schedule in DRAFT status...');
       testSchedule = await prisma.farmPickupSchedule.create({
         data: {
           providerId: transportProviderUser.id,
@@ -604,9 +545,7 @@ describe('TransportController (e2e)', () => {
           status: 'DRAFT',
         },
       });
-      console.log(`✅ Pickup schedule created: ${testSchedule.scheduleNumber} with status: ${testSchedule.status}`);
 
-      console.log('🚚 Stage 2: Publishing schedule via API (if endpoint exists)...');
       // Note: If there's a publish endpoint, use it. Otherwise, update directly for testing
       const updatedSchedule = await prisma.farmPickupSchedule.update({
         where: { id: testSchedule.id },
@@ -615,23 +554,18 @@ describe('TransportController (e2e)', () => {
           publishedAt: new Date(),
         },
       });
-      console.log(`✅ Schedule published: ${updatedSchedule.scheduleNumber} with status: ${updatedSchedule.status}`);
       expect(updatedSchedule.status).toBe('PUBLISHED');
       expect(updatedSchedule.publishedAt).toBeDefined();
       
-      console.log('🚚 Stage 3: Verifying notifications (if implemented)...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'TRANSPORT',
           entityId: testSchedule.id,
         },
       });
-      console.log(`ℹ️  ${notifications.length} notification(s) found (implementation may need enhancement for schedule publishing)`);
-      console.log('✅ Test completed: Pickup schedule publishing (DRAFT → PUBLISHED)');
     });
 
     it('should book pickup slot → capacity updated → notifications sent', async () => {
-      console.log('🚚 Stage 1: Creating published pickup schedule...');
       testSchedule = await prisma.farmPickupSchedule.create({
         data: {
           providerId: transportProviderUser.id,
@@ -648,9 +582,7 @@ describe('TransportController (e2e)', () => {
           publishedAt: new Date(),
         },
       });
-      console.log(`✅ Pickup schedule created: ${testSchedule.scheduleNumber} with available capacity: ${testSchedule.availableCapacity} kg`);
 
-      console.log('🚚 Stage 2: Creating pickup slot...');
       const slot = await prisma.pickupSlot.create({
         data: {
           scheduleId: testSchedule.id,
@@ -661,9 +593,7 @@ describe('TransportController (e2e)', () => {
           status: 'AVAILABLE',
         },
       });
-      console.log(`✅ Pickup slot created: ${slot.id} with capacity: ${slot.capacity} kg`);
 
-      console.log('🚚 Stage 3: Booking pickup slot via API...');
       const bookingData = {
         quantity: 500,
         location: 'Farm Location',
@@ -678,22 +608,17 @@ describe('TransportController (e2e)', () => {
         .send(bookingData)
         .expect(201);
 
-      console.log('🚚 Stage 4: Verifying booking response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.quantity).toBe(bookingData.quantity);
       expect(response.body.data.status).toBe('confirmed');
-      console.log(`✅ Pickup slot booked: ${bookingData.quantity} kg`);
 
-      console.log('🚚 Stage 5: Verifying schedule capacity was updated...');
       const updatedSchedule = await prisma.farmPickupSchedule.findUnique({
         where: { id: testSchedule.id },
       });
       expect(updatedSchedule?.usedCapacity).toBe(500);
       expect(updatedSchedule?.availableCapacity).toBe(4500);
-      console.log(`✅ Schedule capacity updated: used=${updatedSchedule?.usedCapacity} kg, available=${updatedSchedule?.availableCapacity} kg`);
 
-      console.log('🚚 Stage 6: Verifying notifications were created...');
       const notifications = await prisma.notification.findMany({
         where: {
           OR: [
@@ -703,8 +628,6 @@ describe('TransportController (e2e)', () => {
           ],
         },
       });
-      console.log(`ℹ️  ${notifications.length} notification(s) found (implementation may need enhancement for slot booking notifications)`);
-      console.log('✅ Test completed: Pickup slot booking with capacity update');
     });
   });
 
@@ -779,7 +702,6 @@ describe('TransportController (e2e)', () => {
     });
 
     it('should create PRODUCE_PICKUP transport request linked to schedule → provider already assigned', async () => {
-      console.log('🚚 Stage 1: Creating PRODUCE_PICKUP transport request linked to schedule...');
       const requestData = {
         type: 'PRODUCE_PICKUP',
         pickupLocation: 'Farm Location',
@@ -794,25 +716,20 @@ describe('TransportController (e2e)', () => {
         pickupScheduleId: testSchedule.id,
         pickupSlotId: testSlot.id,
       };
-      console.log(`✅ Request data prepared: ${requestData.type} linked to schedule ${testSchedule.scheduleNumber}`);
 
-      console.log('🚚 Stage 2: Creating transport request via API...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/transport/requests`)
         .set('Authorization', `Bearer ${farmerToken}`)
         .send(requestData)
         .expect(201);
 
-      console.log('🚚 Stage 3: Verifying transport request creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.requestNumber).toBeDefined();
       expect(response.body.data.type).toBe('PRODUCE_PICKUP');
       expect(response.body.data.pickupScheduleId).toBe(testSchedule.id);
       expect(response.body.data.pickupSlotId).toBe(testSlot.id);
-      console.log(`✅ Transport request created: ${response.body.data.requestNumber}`);
 
-      console.log('🚚 Stage 4: Verifying provider is already assigned (schedule owner)...');
       // When linked to schedule, provider should be the schedule owner
       const transportRequest = await prisma.transportRequest.findUnique({
         where: { id: response.body.data.id },
@@ -822,10 +739,7 @@ describe('TransportController (e2e)', () => {
       // For now, we verify the schedule link exists
       expect(transportRequest?.pickupScheduleId).toBe(testSchedule.id);
       expect(transportRequest?.pickupSchedule?.providerId).toBe(transportProviderUser.id);
-      console.log(`✅ Transport request linked to schedule owned by provider: ${transportProviderUser.id}`);
-      console.log(`ℹ️  Provider auto-assignment may need implementation enhancement per lifecycle requirements`);
 
-      console.log('🚚 Stage 5: Verifying activity log was created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'TRANSPORT',
@@ -834,12 +748,9 @@ describe('TransportController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThanOrEqual(1);
-      console.log(`✅ ${activityLogs.length} activity log(s) created for transport request`);
-      console.log('✅ Test completed: PRODUCE_PICKUP transport request linked to schedule');
     });
 
     it('should complete PRODUCE_PICKUP lifecycle when linked to schedule (different from standalone)', async () => {
-      console.log('🚚 Stage 1: Creating PRODUCE_PICKUP transport request linked to schedule with provider assigned...');
       const transportRequest = await prisma.transportRequest.create({
         data: {
           requesterId: farmerUser.id,
@@ -858,23 +769,17 @@ describe('TransportController (e2e)', () => {
           providerId: transportProviderUser.id, // Provider already assigned (schedule owner)
         },
       });
-      console.log(`✅ Transport request created: ${transportRequest.requestNumber} with provider already assigned: ${transportProviderUser.id}`);
 
-      console.log('🚚 Stage 2: Verifying request is linked to schedule and slot...');
       expect(transportRequest.pickupScheduleId).toBe(testSchedule.id);
       expect(transportRequest.pickupSlotId).toBe(testSlot.id);
       expect(transportRequest.providerId).toBe(transportProviderUser.id);
-      console.log(`✅ Transport request correctly linked to schedule ${testSchedule.scheduleNumber} and slot ${testSlot.id}`);
 
-      console.log('🚚 Stage 3: Updating transport status to IN_TRANSIT_PICKUP...');
       const transitResponse = await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .send({ status: 'IN_TRANSIT_PICKUP' })
         .expect(200);
-      console.log(`✅ Transport status updated to: ${transitResponse.body.data.status}`);
 
-      console.log('🚚 Stage 4: Verifying notifications and activity logs...');
       const notifications = await prisma.notification.findMany({
         where: {
           entityType: 'TRANSPORT',
@@ -890,31 +795,24 @@ describe('TransportController (e2e)', () => {
       });
       expect(notifications.length).toBeGreaterThan(0);
       expect(activityLogs.length).toBeGreaterThan(0);
-      console.log(`✅ ${notifications.length} notification(s) and ${activityLogs.length} activity log(s) created`);
 
-      console.log('🚚 Stage 5: Updating transport status to DELIVERED...');
       const deliveredResponse = await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .send({ status: 'DELIVERED' })
         .expect(200);
-      console.log(`✅ Transport status updated to: ${deliveredResponse.body.data.status}`);
 
-      console.log('🚚 Stage 6: Verifying final state...');
       const finalRequest = await prisma.transportRequest.findUnique({
         where: { id: transportRequest.id },
         include: { pickupSchedule: true },
       });
       expect(finalRequest?.status).toBe('DELIVERED');
       expect(finalRequest?.pickupScheduleId).toBe(testSchedule.id);
-      console.log(`✅ Final transport status: ${finalRequest?.status}, still linked to schedule`);
-      console.log('✅ Test completed: PRODUCE_PICKUP lifecycle when linked to schedule');
     });
   });
 
   describe('Order Status Integration', () => {
     it('should update order status when standalone PRODUCE_PICKUP is accepted (PRODUCE_PICKUP → IN_TRANSIT)', async () => {
-      console.log('🚚 Stage 1: Creating test order...');
       testOrder = await prisma.marketplaceOrder.create({
         data: {
           buyerId: buyerUser.id,
@@ -931,9 +829,7 @@ describe('TransportController (e2e)', () => {
           statusHistory: [],
         },
       });
-      console.log(`✅ Test order created: ${testOrder.orderNumber} with status: ${testOrder.status}`);
 
-      console.log('🚚 Stage 2: Creating transport request linked to order...');
       const transportRequest = await prisma.transportRequest.create({
         data: {
           requesterId: farmerUser.id,
@@ -951,9 +847,7 @@ describe('TransportController (e2e)', () => {
           providerId: transportProviderUser.id,
         },
       });
-      console.log(`✅ Transport request created: ${transportRequest.requestNumber}`);
 
-      console.log('🚚 Stage 3: Updating transport status to IN_TRANSIT_PICKUP...');
       const statusResponse = await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
@@ -963,19 +857,14 @@ describe('TransportController (e2e)', () => {
         console.error('❌ Status update failed:', statusResponse.status, statusResponse.body);
       }
       expect(statusResponse.status).toBe(200);
-      console.log('✅ Transport status updated to: IN_TRANSIT_PICKUP');
 
-      console.log('🚚 Stage 4: Verifying order status was updated...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(updatedOrder?.status).toBe('IN_TRANSIT');
-      console.log(`✅ Order status updated to: ${updatedOrder?.status}`);
-      console.log('✅ Test completed: Order status integration (PRODUCE_PICKUP → IN_TRANSIT)');
     });
 
     it('should update order status when transport is delivered (PRODUCE_DELIVERY by Buyer → DELIVERED)', async () => {
-      console.log('🚚 Stage 1: Creating test order...');
       testOrder = await prisma.marketplaceOrder.create({
         data: {
           buyerId: buyerUser.id,
@@ -992,9 +881,7 @@ describe('TransportController (e2e)', () => {
           statusHistory: [],
         },
       });
-      console.log(`✅ Test order created: ${testOrder.orderNumber} with status: ${testOrder.status}`);
 
-      console.log('🚚 Stage 2: Creating PRODUCE_DELIVERY transport request...');
       const transportRequest = await prisma.transportRequest.create({
         data: {
           requesterId: buyerUser.id,
@@ -1012,9 +899,7 @@ describe('TransportController (e2e)', () => {
           providerId: transportProviderUser.id,
         },
       });
-      console.log(`✅ Transport request created: ${transportRequest.requestNumber}`);
 
-      console.log('🚚 Stage 3: Updating transport status to DELIVERED...');
       const statusResponse = await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
@@ -1024,21 +909,16 @@ describe('TransportController (e2e)', () => {
         console.error('❌ Status update failed:', statusResponse.status, statusResponse.body);
       }
       expect(statusResponse.status).toBe(200);
-      console.log('✅ Transport status updated to: DELIVERED');
 
-      console.log('🚚 Stage 4: Verifying order status was updated...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(updatedOrder?.status).toBe('DELIVERED');
-      console.log(`✅ Order status updated to: ${updatedOrder?.status}`);
-      console.log('✅ Test completed: Order status integration (PRODUCE_DELIVERY → DELIVERED)');
     });
   });
 
   describe('PRODUCE_PICKUP by Aggregation Manager', () => {
     it('should create PRODUCE_PICKUP transport request by Aggregation Manager → activity log created', async () => {
-      console.log('🚚 Stage 1: Preparing PRODUCE_PICKUP transport request data (Aggregation Manager as requester)...');
       const requestData = {
         type: 'PRODUCE_PICKUP',
         requesterType: 'aggregation_center',
@@ -1052,25 +932,20 @@ describe('TransportController (e2e)', () => {
         weight: 200,
         description: 'Transport OFSP from farm to aggregation center (requested by manager)',
       };
-      console.log(`✅ Request data prepared: ${requestData.type} by Aggregation Manager`);
 
-      console.log('🚚 Stage 2: Creating transport request via API (Aggregation Manager)...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/transport/requests`)
         .set('Authorization', `Bearer ${aggregationManagerToken}`)
         .send(requestData)
         .expect(201);
 
-      console.log('🚚 Stage 3: Verifying transport request creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.requestNumber).toBeDefined();
       expect(response.body.data.type).toBe('PRODUCE_PICKUP');
       expect(response.body.data.status).toBe('PENDING');
       expect(response.body.data.requesterType).toBe('aggregation_center');
-      console.log(`✅ Transport request created: ${response.body.data.requestNumber} by Aggregation Manager`);
 
-      console.log('🚚 Stage 4: Verifying activity log was created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'TRANSPORT',
@@ -1079,14 +954,11 @@ describe('TransportController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThanOrEqual(1);
-      console.log(`✅ ${activityLogs.length} activity log(s) created for transport request`);
-      console.log('✅ Test completed: PRODUCE_PICKUP transport request by Aggregation Manager');
     });
   });
 
   describe('PRODUCE_DELIVERY by Aggregation Manager', () => {
     it('should create PRODUCE_DELIVERY transport request by Aggregation Manager → order status updated on delivery', async () => {
-      console.log('🚚 Stage 1: Creating test order for PRODUCE_DELIVERY...');
       testOrder = await prisma.marketplaceOrder.create({
         data: {
           buyerId: buyerUser.id,
@@ -1103,9 +975,7 @@ describe('TransportController (e2e)', () => {
           statusHistory: [],
         },
       });
-      console.log(`✅ Test order created: ${testOrder.orderNumber} with status: ${testOrder.status}`);
 
-      console.log('🚚 Stage 2: Creating PRODUCE_DELIVERY transport request by Aggregation Manager...');
       const requestData = {
         type: 'PRODUCE_DELIVERY',
         requesterType: 'aggregation_center',
@@ -1124,9 +994,7 @@ describe('TransportController (e2e)', () => {
         .send(requestData)
         .expect(201);
 
-      console.log(`✅ Transport request created: ${createResponse.body.data.requestNumber} by Aggregation Manager`);
 
-      console.log('🚚 Stage 3: Accepting transport request...');
       const transportRequest = await prisma.transportRequest.findUnique({
         where: { id: createResponse.body.data.id },
       });
@@ -1134,31 +1002,23 @@ describe('TransportController (e2e)', () => {
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/accept`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .expect(200);
-      console.log('✅ Transport request accepted');
 
-      console.log('🚚 Stage 4: Updating transport status to IN_TRANSIT_DELIVERY...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .send({ status: 'IN_TRANSIT_DELIVERY' })
         .expect(200);
-      console.log('✅ Transport status updated to: IN_TRANSIT_DELIVERY');
 
-      console.log('🚚 Stage 5: Updating transport status to DELIVERED...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .send({ status: 'DELIVERED' })
         .expect(200);
-      console.log('✅ Transport status updated to: DELIVERED');
 
-      console.log('🚚 Stage 6: Verifying order status was updated to DELIVERED...');
       const updatedOrder = await prisma.marketplaceOrder.findUnique({
         where: { id: testOrder.id },
       });
       expect(updatedOrder?.status).toBe('DELIVERED');
-      console.log(`✅ Order status updated to: ${updatedOrder?.status}`);
-      console.log('✅ Test completed: PRODUCE_DELIVERY by Aggregation Manager with order status update');
     });
   });
 
@@ -1214,7 +1074,6 @@ describe('TransportController (e2e)', () => {
     });
 
     it('should create INPUT_DELIVERY transport request by Input Provider → activity log created', async () => {
-      console.log('🚚 Stage 1: Preparing INPUT_DELIVERY transport request data (Input Provider as requester)...');
       const requestData = {
         type: 'INPUT_DELIVERY',
         requesterType: 'input_provider',
@@ -1228,25 +1087,20 @@ describe('TransportController (e2e)', () => {
         weight: 50,
         description: 'Transport input products from provider to farmer',
       };
-      console.log(`✅ Request data prepared: ${requestData.type} by Input Provider`);
 
-      console.log('🚚 Stage 2: Creating transport request via API (Input Provider)...');
       const response = await request(app.getHttpServer())
         .post(`/${apiPrefix}/transport/requests`)
         .set('Authorization', `Bearer ${inputProviderToken}`)
         .send(requestData)
         .expect(201);
 
-      console.log('🚚 Stage 3: Verifying transport request creation response...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.requestNumber).toBeDefined();
       expect(response.body.data.type).toBe('INPUT_DELIVERY');
       expect(response.body.data.status).toBe('PENDING');
       expect(response.body.data.requesterType).toBe('input_provider');
-      console.log(`✅ Transport request created: ${response.body.data.requestNumber} by Input Provider`);
 
-      console.log('🚚 Stage 4: Verifying activity log was created...');
       const activityLogs = await prisma.activityLog.findMany({
         where: {
           entityType: 'TRANSPORT',
@@ -1255,12 +1109,9 @@ describe('TransportController (e2e)', () => {
         },
       });
       expect(activityLogs.length).toBeGreaterThanOrEqual(1);
-      console.log(`✅ ${activityLogs.length} activity log(s) created for transport request`);
-      console.log('✅ Test completed: INPUT_DELIVERY transport request by Input Provider');
     });
 
     it('should create INPUT_DELIVERY transport request linked to InputOrder → full lifecycle', async () => {
-      console.log('🚚 Stage 1: Creating INPUT_DELIVERY transport request linked to InputOrder...');
       const requestData = {
         type: 'INPUT_DELIVERY',
         requesterType: 'input_provider',
@@ -1281,59 +1132,43 @@ describe('TransportController (e2e)', () => {
       const transportRequest = await prisma.transportRequest.findUnique({
         where: { id: createResponse.body.data.id },
       });
-      console.log(`✅ Transport request created: ${transportRequest.requestNumber}`);
 
-      console.log('🚚 Stage 2: Accepting transport request...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/accept`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .expect(200);
-      console.log('✅ Transport request accepted');
 
-      console.log('🚚 Stage 3: Updating transport status to IN_TRANSIT_DELIVERY...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .send({ status: 'IN_TRANSIT_DELIVERY' })
         .expect(200);
-      console.log('✅ Transport status updated to: IN_TRANSIT_DELIVERY');
 
-      console.log('🚚 Stage 4: Updating transport status to DELIVERED...');
       await request(app.getHttpServer())
         .put(`/${apiPrefix}/transport/requests/${transportRequest.id}/status`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .send({ status: 'DELIVERED' })
         .expect(200);
-      console.log('✅ Transport status updated to: DELIVERED');
 
-      console.log('🚚 Stage 5: Verifying final transport state...');
       const finalRequest = await prisma.transportRequest.findUnique({
         where: { id: transportRequest.id },
       });
       expect(finalRequest?.status).toBe('DELIVERED');
       expect(finalRequest?.actualDelivery).toBeDefined();
-      console.log(`✅ Final transport status: ${finalRequest?.status}`);
-      console.log('✅ Test completed: INPUT_DELIVERY full lifecycle by Input Provider');
     });
   });
 
   describe('Statistics', () => {
     it('should return transport statistics', async () => {
-      console.log('📊 Stage 1: Fetching transport statistics via API...');
       const response = await request(app.getHttpServer())
         .get(`/${apiPrefix}/transport/stats`)
         .set('Authorization', `Bearer ${transportProviderToken}`)
         .expect(200);
 
-      console.log('📊 Stage 2: Verifying statistics response structure...');
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
       expect(response.body.data.totalRequests).toBeDefined();
       expect(response.body.data.activeDeliveries).toBeDefined();
-      console.log(`✅ Statistics retrieved:`);
-      console.log(`   - Total Requests: ${response.body.data.totalRequests}`);
-      console.log(`   - Active Deliveries: ${response.body.data.activeDeliveries}`);
-      console.log('✅ Test completed: Transport statistics retrieval');
     });
   });
 });

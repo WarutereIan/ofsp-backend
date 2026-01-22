@@ -274,7 +274,7 @@ export class TransportService {
       throw new BadRequestException('Only pending requests can be accepted');
     }
 
-    return this.prisma.transportRequest.update({
+    const updatedRequest = await this.prisma.transportRequest.update({
       where: { id },
       data: {
         providerId,
@@ -293,6 +293,36 @@ export class TransportService {
         },
       },
     });
+
+    // Create notifications for requester and provider
+    await this.notificationHelperService.createNotifications([
+      {
+        userId: request.requesterId,
+        type: 'TRANSPORT',
+        title: 'Transport Request Accepted',
+        message: `Transport request #${request.requestNumber} has been accepted by a provider`,
+        priority: 'HIGH',
+        entityType: 'TRANSPORT',
+        entityId: request.id,
+        actionUrl: `/transport/${request.id}`,
+        actionLabel: 'View Request',
+        metadata: { requestNumber: request.requestNumber, providerId },
+      },
+      {
+        userId: providerId,
+        type: 'TRANSPORT',
+        title: 'Transport Request Accepted',
+        message: `You have accepted transport request #${request.requestNumber}`,
+        priority: 'MEDIUM',
+        entityType: 'TRANSPORT',
+        entityId: request.id,
+        actionUrl: `/transport/${request.id}`,
+        actionLabel: 'View Request',
+        metadata: { requestNumber: request.requestNumber },
+      },
+    ]);
+
+    return updatedRequest;
   }
 
   // ============ Pickup Schedules ============
@@ -521,7 +551,7 @@ export class TransportService {
       throw new BadRequestException('Only the transport provider can add tracking updates');
     }
 
-    return this.prisma.trackingUpdate.create({
+    const trackingUpdate = await this.prisma.trackingUpdate.create({
       data: {
         requestId: requestId,
         location: data.location,
@@ -531,6 +561,22 @@ export class TransportService {
         updatedBy: userId,
       },
     });
+
+    // Create activity log
+    await this.activityLogService.createActivityLog({
+      userId,
+      action: 'TRANSPORT_TRACKING_UPDATE',
+      entityType: 'TRANSPORT',
+      entityId: requestId,
+      metadata: {
+        requestNumber: request.requestNumber,
+        location: data.location,
+        status: data.status,
+        trackingUpdateId: trackingUpdate.id,
+      },
+    });
+
+    return trackingUpdate;
   }
 
   // ============ Statistics ============

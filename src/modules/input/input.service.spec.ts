@@ -408,10 +408,19 @@ describe('InputService', () => {
 
       expect(notificationHelperService.createNotifications).toHaveBeenCalledTimes(1);
       const notificationsCall = notificationHelperService.createNotifications.mock.calls[0][0];
-      expect(notificationsCall).toHaveLength(1);
-      expect(notificationsCall[0].userId).toBe('user-2'); // Farmer
-      expect(notificationsCall[0].title).toBe('Order Delivered');
-      expect(notificationsCall[0].priority).toBe('HIGH');
+      expect(notificationsCall).toHaveLength(2);
+      
+      // Farmer notification
+      const farmerNotification = notificationsCall.find(n => n.userId === 'user-2');
+      expect(farmerNotification).toBeDefined();
+      expect(farmerNotification.title).toBe('Order Delivered');
+      expect(farmerNotification.priority).toBe('HIGH');
+      
+      // Provider notification
+      const providerNotification = notificationsCall.find(n => n.userId === 'user-1');
+      expect(providerNotification).toBeDefined();
+      expect(providerNotification.title).toBe('Order Delivered Successfully');
+      expect(providerNotification.priority).toBe('HIGH');
     });
 
     it('should create activity log when status is updated', async () => {

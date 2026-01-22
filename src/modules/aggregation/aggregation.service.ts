@@ -170,6 +170,66 @@ export class AggregationService {
       SELECT generate_stock_transaction_number() as generate_stock_transaction_number
     `;
 
+    // Get the destination center to check if it's a main center
+    const destinationCenter = await this.prisma.aggregationCenter.findUnique({
+      where: { id: data.centerId },
+      select: { centerType: true, name: true },
+    });
+
+    if (!destinationCenter) {
+      throw new BadRequestException('Destination aggregation center not found');
+    }
+
+    // Check if this is a transfer from satellite to main center
+    const isTransferFromSatellite = data.sourceCenterId && destinationCenter.centerType === 'MAIN';
+    let sourceCenter: { centerType: string; name: string } | null = null;
+    let transferTransaction: { type: string; centerId: string; quantity: number } | null = null;
+
+    if (isTransferFromSatellite && data.sourceCenterId) {
+      // Verify source center exists and is a satellite
+      const foundSourceCenter = await this.prisma.aggregationCenter.findUnique({
+        where: { id: data.sourceCenterId },
+        select: { centerType: true, name: true },
+      });
+
+      if (!foundSourceCenter) {
+        throw new BadRequestException('Source aggregation center not found');
+      }
+
+      sourceCenter = foundSourceCenter;
+
+      if (sourceCenter.centerType !== 'SATELLITE') {
+        throw new BadRequestException('Source center must be a SATELLITE center for transfers');
+      }
+
+      // If transfer transaction ID is provided, verify it exists and is a STOCK_OUT
+      if (data.transferTransactionId) {
+        const foundTransaction = await this.prisma.stockTransaction.findUnique({
+          where: { id: data.transferTransactionId },
+          select: { type: true, centerId: true, quantity: true },
+        });
+
+        if (!foundTransaction) {
+          throw new BadRequestException('Transfer transaction not found');
+        }
+
+        transferTransaction = foundTransaction;
+
+        if (transferTransaction.type !== 'STOCK_OUT') {
+          throw new BadRequestException('Transfer transaction must be a STOCK_OUT type');
+        }
+
+        if (transferTransaction.centerId !== data.sourceCenterId) {
+          throw new BadRequestException('Transfer transaction does not match source center');
+        }
+
+        // Verify quantity matches (optional validation)
+        if (Math.abs(transferTransaction.quantity - data.quantity) > 0.01) {
+          console.warn(`Quantity mismatch: transfer transaction has ${transferTransaction.quantity}kg, but stock in is ${data.quantity}kg`);
+        }
+      }
+    }
+
     // Get farmer info from order if orderId is provided and farmerId is not
     let farmerId = data.farmerId;
     let farmerName = data.farmerName;
@@ -192,11 +252,26 @@ export class AggregationService {
       }
     }
 
+    // If transfer, get farmer info from source transaction if not provided
+    if (isTransferFromSatellite && transferTransaction && !farmerId) {
+      const sourceTransaction = await this.prisma.stockTransaction.findUnique({
+        where: { id: data.transferTransactionId! },
+        select: { farmerId: true, farmerName: true },
+      });
+      if (sourceTransaction?.farmerId) {
+        farmerId = sourceTransaction.farmerId;
+        farmerName = sourceTransaction.farmerName || undefined;
+      }
+    }
+
+    // Determine transaction type: TRANSFER if from satellite, STOCK_IN otherwise
+    const transactionType = isTransferFromSatellite ? 'TRANSFER' : 'STOCK_IN';
+
     const stockTransaction = await this.prisma.stockTransaction.create({
       data: {
         centerId: data.centerId,
         transactionNumber: transactionNumber[0].generate_stock_transaction_number,
-        type: 'STOCK_IN',
+        type: transactionType,
         variety: data.variety,
         quantity: data.quantity,
         qualityGrade: data.qualityGrade as any,
@@ -207,7 +282,9 @@ export class AggregationService {
         farmerName,
         batchId: data.batchId,
         qrCode: data.qrCode,
-        notes: data.notes,
+        notes: isTransferFromSatellite
+          ? `Transfer from ${sourceCenter?.name || 'satellite center'}${data.transferTransactionId ? ` (Transaction: ${data.transferTransactionId})` : ''}. ${data.notes || ''}`.trim()
+          : data.notes,
         createdBy: userId,
       },
       include: {
@@ -222,7 +299,7 @@ export class AggregationService {
     });
 
     // Create inventory item for traceability (per lifecycle requirements)
-    let inventoryItem = null;
+    let inventoryItem: { id: string } | null = null;
     if (data.batchId) {
       try {
         // Check if inventory item already exists for this batch
@@ -231,7 +308,7 @@ export class AggregationService {
         });
 
         if (!existingInventory) {
-          inventoryItem = await this.prisma.inventoryItem.create({
+          const created = await this.prisma.inventoryItem.create({
             data: {
               centerId: data.centerId,
               variety: data.variety,
@@ -244,14 +321,16 @@ export class AggregationService {
               stockTransactionId: stockTransaction.id,
             },
           });
+          inventoryItem = { id: created.id };
         } else {
           // Update existing inventory if batch already exists
-          inventoryItem = await this.prisma.inventoryItem.update({
+          const updated = await this.prisma.inventoryItem.update({
             where: { id: existingInventory.id },
             data: {
               quantity: existingInventory.quantity + data.quantity,
             },
           });
+          inventoryItem = { id: updated.id };
         }
       } catch (error) {
         console.error('Failed to create inventory item:', error);
@@ -328,17 +407,63 @@ export class AggregationService {
     // Create activity log
     await this.activityLogService.createActivityLog({
       userId,
-      action: 'STOCK_IN_CREATED',
+      action: isTransferFromSatellite ? 'STOCK_TRANSFER_RECEIVED' : 'STOCK_IN_CREATED',
       entityType: 'STOCK_TRANSACTION',
       entityId: stockTransaction.id,
       metadata: {
         transactionNumber: stockTransaction.transactionNumber,
         orderId: data.orderId,
         centerId: data.centerId,
+        sourceCenterId: data.sourceCenterId,
         inventoryItemId: inventoryItem?.id,
         batchId: data.batchId,
+        isTransfer: isTransferFromSatellite,
       },
     });
+
+    // If transfer from satellite to main center, automatically create secondary quality check
+    if (isTransferFromSatellite && destinationCenter.centerType === 'MAIN') {
+      try {
+        // Create a quality check with default values (manager will complete it)
+        // Quality score defaults to 70 (passing threshold) but can be updated
+        const qualityCheckData: CreateQualityCheckDto = {
+          centerId: data.centerId,
+          transactionId: stockTransaction.id,
+          variety: data.variety,
+          quantity: data.quantity,
+          qualityGrade: data.qualityGrade,
+          qualityScore: 70, // Default passing score, to be updated by quality checker
+          batchId: data.batchId,
+          farmerId: farmerId || undefined,
+          farmerName: farmerName || undefined,
+          notes: `Secondary quality check required for stock transferred from ${sourceCenter?.name || 'satellite center'}`,
+        };
+
+        await this.createQualityCheck(qualityCheckData, userId);
+
+        // Create notification for aggregation manager about required quality check
+        await this.notificationHelperService.createNotification({
+          userId,
+          type: 'QUALITY_CHECK',
+          title: 'Secondary Quality Check Required',
+          message: `Stock transferred from ${sourceCenter?.name || 'satellite center'} requires secondary quality check at main center`,
+          priority: 'HIGH',
+          entityType: 'STOCK_TRANSACTION',
+          entityId: stockTransaction.id,
+          actionUrl: `/aggregation/quality-checks?transactionId=${stockTransaction.id}`,
+          actionLabel: 'Complete Quality Check',
+          metadata: {
+            transactionNumber: stockTransaction.transactionNumber,
+            sourceCenter: sourceCenter?.name,
+            destinationCenter: destinationCenter.name,
+            batchId: data.batchId,
+          },
+        });
+      } catch (error) {
+        console.error('Failed to create secondary quality check for transfer:', error);
+        // Don't fail the stock in transaction if quality check creation fails
+      }
+    }
 
     // Return stock transaction (inventoryItem is created but not included in response to maintain API compatibility)
     return stockTransaction;
