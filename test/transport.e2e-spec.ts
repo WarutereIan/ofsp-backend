@@ -464,17 +464,31 @@ describe('TransportController (e2e)', () => {
         where: { name: 'Test Center' },
       });
       for (const center of existingCenters) {
-        // Delete related data in correct order
-        await prisma.pickupSlotBooking.deleteMany({ 
-          where: { scheduleId: { in: (await prisma.farmPickupSchedule.findMany({ where: { aggregationCenterId: center.id } })).map(s => s.id) } }
-        });
-        await prisma.pickupSlot.deleteMany({ 
-          where: { scheduleId: { in: (await prisma.farmPickupSchedule.findMany({ where: { aggregationCenterId: center.id } })).map(s => s.id) } }
-        });
-        await prisma.transportRequest.deleteMany({ 
-          where: { pickupScheduleId: { in: (await prisma.farmPickupSchedule.findMany({ where: { aggregationCenterId: center.id } })).map(s => s.id) } }
-        });
+        // Delete related data in correct order (respecting foreign key constraints)
+        const schedules = await prisma.farmPickupSchedule.findMany({ where: { aggregationCenterId: center.id } });
+        const scheduleIds = schedules.map(s => s.id);
+        
+        // First delete receipts (they reference bookings)
+        const bookings = await prisma.pickupSlotBooking.findMany({ where: { scheduleId: { in: scheduleIds } } });
+        const bookingIds = bookings.map(b => b.id);
+        await prisma.pickupReceipt.deleteMany({ where: { bookingId: { in: bookingIds } } });
+        
+        // Then delete bookings
+        await prisma.pickupSlotBooking.deleteMany({ where: { scheduleId: { in: scheduleIds } } });
+        
+        // Delete slots
+        await prisma.pickupSlot.deleteMany({ where: { scheduleId: { in: scheduleIds } } });
+        
+        // Delete transport requests
+        await prisma.transportRequest.deleteMany({ where: { pickupScheduleId: { in: scheduleIds } } });
+        
+        // Delete schedules
         await prisma.farmPickupSchedule.deleteMany({ where: { aggregationCenterId: center.id } });
+        
+        // Delete inventory items
+        await prisma.inventoryItem.deleteMany({ where: { centerId: center.id } });
+        
+        // Finally delete center
         await prisma.aggregationCenter.delete({ where: { id: center.id } });
       }
 
@@ -546,23 +560,22 @@ describe('TransportController (e2e)', () => {
         },
       });
 
-      // Note: If there's a publish endpoint, use it. Otherwise, update directly for testing
-      const updatedSchedule = await prisma.farmPickupSchedule.update({
-        where: { id: testSchedule.id },
-        data: {
-          status: 'PUBLISHED',
-          publishedAt: new Date(),
-        },
-      });
-      expect(updatedSchedule.status).toBe('PUBLISHED');
-      expect(updatedSchedule.publishedAt).toBeDefined();
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/transport/pickup-schedules/${testSchedule.id}/publish`)
+        .set('Authorization', `Bearer ${transportProviderToken}`)
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.status).toBe('PUBLISHED');
+      expect(response.body.data.publishedAt).toBeDefined();
       
       const notifications = await prisma.notification.findMany({
         where: {
-          entityType: 'TRANSPORT',
+          entityType: 'PICKUP_SCHEDULE',
           entityId: testSchedule.id,
         },
       });
+      expect(notifications.length).toBeGreaterThan(0);
     });
 
     it('should book pickup slot → capacity updated → notifications sent', async () => {
@@ -629,6 +642,801 @@ describe('TransportController (e2e)', () => {
         },
       });
     });
+
+    it('should update pickup schedule (only DRAFT status)', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-UPDATE-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 0,
+          availableCapacity: 5000,
+          vehicleType: 'TRUCK',
+          status: 'DRAFT',
+        },
+      });
+
+      const updateData = {
+        route: 'Updated Route B',
+        totalCapacity: 6000,
+        notes: 'Updated notes',
+      };
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/transport/pickup-schedules/${testSchedule.id}`)
+        .set('Authorization', `Bearer ${transportProviderToken}`)
+        .send(updateData)
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.route).toBe('Updated Route B');
+      expect(response.body.data.totalCapacity).toBe(6000);
+      expect(response.body.data.notes).toBe('Updated notes');
+
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'PICKUP_SCHEDULE',
+          entityId: testSchedule.id,
+          action: 'PICKUP_SCHEDULE_UPDATED',
+        },
+      });
+      expect(activityLogs.length).toBeGreaterThan(0);
+    });
+
+    it('should reject updating pickup schedule when not in DRAFT status', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-PUBLISHED-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 0,
+          availableCapacity: 5000,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/transport/pickup-schedules/${testSchedule.id}`)
+        .set('Authorization', `Bearer ${transportProviderToken}`)
+        .send({ route: 'Updated Route' })
+        .expect(400);
+
+      expect(response.body.message).toContain('draft');
+    });
+
+    it('should publish pickup schedule (DRAFT → PUBLISHED) → syncs center capacity → sends notifications', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-PUBLISH-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 0,
+          availableCapacity: 5000,
+          vehicleType: 'TRUCK',
+          status: 'DRAFT',
+        },
+      });
+
+      // Add some inventory to center to test capacity calculation
+      await prisma.inventoryItem.create({
+        data: {
+          centerId: testCenter.id,
+          variety: 'KENYA',
+          quantity: 2000,
+          unit: 'kg',
+          qualityGrade: 'A',
+          batchId: 'BATCH-TEST-CAPACITY-001',
+          stockInDate: new Date(),
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/transport/pickup-schedules/${testSchedule.id}/publish`)
+        .set('Authorization', `Bearer ${transportProviderToken}`)
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.status).toBe('PUBLISHED');
+      expect(response.body.data.publishedAt).toBeDefined();
+      expect(response.body.data.centerCapacity).toBeDefined();
+      expect(response.body.data.centerCapacity.totalCapacity).toBe(10000);
+      expect(response.body.data.centerCapacity.availableCapacity).toBe(8000); // 10000 - 2000
+
+      const notifications = await prisma.notification.findMany({
+        where: {
+          entityType: 'PICKUP_SCHEDULE',
+          entityId: testSchedule.id,
+        },
+      });
+      expect(notifications.length).toBeGreaterThan(0);
+
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'PICKUP_SCHEDULE',
+          entityId: testSchedule.id,
+          action: 'PICKUP_SCHEDULE_PUBLISHED',
+        },
+      });
+      expect(activityLogs.length).toBeGreaterThan(0);
+    });
+
+    it('should reject publishing pickup schedule when not in DRAFT status', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-ALREADY-PUB-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 0,
+          availableCapacity: 5000,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/transport/pickup-schedules/${testSchedule.id}/publish`)
+        .set('Authorization', `Bearer ${transportProviderToken}`)
+        .expect(400);
+
+      expect(response.body.message).toContain('draft');
+    });
+
+    it('should cancel pickup schedule → cancels all bookings → releases capacity → sends notifications', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-CANCEL-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 1000,
+          availableCapacity: 4000,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const slot = await prisma.pickupSlot.create({
+        data: {
+          scheduleId: testSchedule.id,
+          startTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          endTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000),
+          capacity: 2000,
+          usedCapacity: 1000,
+          availableCapacity: 1000,
+          status: 'BOOKED',
+        },
+      });
+
+      const booking1 = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 500,
+          location: 'Farm 1',
+          contactPhone: '+254712345678',
+          status: 'confirmed',
+        },
+      });
+
+      const booking2 = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 500,
+          location: 'Farm 2',
+          contactPhone: '+254712345679',
+          status: 'confirmed',
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/transport/pickup-schedules/${testSchedule.id}/cancel`)
+        .set('Authorization', `Bearer ${transportProviderToken}`)
+        .send({ reason: 'Test cancellation' })
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.status).toBe('CANCELLED');
+
+      const updatedSchedule = await prisma.farmPickupSchedule.findUnique({
+        where: { id: testSchedule.id },
+      });
+      expect(updatedSchedule?.status).toBe('CANCELLED');
+      expect(updatedSchedule?.usedCapacity).toBe(0);
+      expect(updatedSchedule?.availableCapacity).toBe(5000);
+
+      const cancelledBookings = await prisma.pickupSlotBooking.findMany({
+        where: { scheduleId: testSchedule.id },
+      });
+      expect(cancelledBookings.every(b => b.status === 'cancelled')).toBe(true);
+
+      const notifications = await prisma.notification.findMany({
+        where: {
+          entityType: 'PICKUP_SCHEDULE',
+          entityId: testSchedule.id,
+        },
+      });
+      expect(notifications.length).toBeGreaterThan(0);
+
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'PICKUP_SCHEDULE',
+          entityId: testSchedule.id,
+          action: 'PICKUP_SCHEDULE_CANCELLED',
+        },
+      });
+      expect(activityLogs.length).toBeGreaterThan(0);
+    });
+
+    it('should reject cancelling pickup schedule when already completed or cancelled', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-COMPLETED-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 0,
+          availableCapacity: 5000,
+          vehicleType: 'TRUCK',
+          status: 'COMPLETED',
+          completedAt: new Date(),
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/transport/pickup-schedules/${testSchedule.id}/cancel`)
+        .set('Authorization', `Bearer ${transportProviderToken}`)
+        .expect(400);
+
+      expect(response.body.message).toContain('COMPLETED');
+    });
+
+    it('should cancel pickup slot booking → releases capacity → sends notifications', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-BOOKING-CANCEL-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 500,
+          availableCapacity: 4500,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const slot = await prisma.pickupSlot.create({
+        data: {
+          scheduleId: testSchedule.id,
+          startTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          endTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000),
+          capacity: 1000,
+          usedCapacity: 500,
+          availableCapacity: 500,
+          status: 'BOOKED',
+        },
+      });
+
+      const booking = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 500,
+          location: 'Farm Location',
+          contactPhone: '+254712345678',
+          status: 'confirmed',
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .delete(`/${apiPrefix}/transport/pickup-slots/bookings/${booking.id}`)
+        .set('Authorization', `Bearer ${farmerToken}`)
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+
+      const updatedBooking = await prisma.pickupSlotBooking.findUnique({
+        where: { id: booking.id },
+      });
+      expect(updatedBooking?.status).toBe('cancelled');
+      expect(updatedBooking?.cancelledAt).toBeDefined();
+
+      const updatedSlot = await prisma.pickupSlot.findUnique({
+        where: { id: slot.id },
+      });
+      expect(updatedSlot?.usedCapacity).toBe(0);
+      expect(updatedSlot?.availableCapacity).toBe(1000);
+
+      const updatedSchedule = await prisma.farmPickupSchedule.findUnique({
+        where: { id: testSchedule.id },
+      });
+      expect(updatedSchedule?.usedCapacity).toBe(0);
+      expect(updatedSchedule?.availableCapacity).toBe(5000);
+
+      const notifications = await prisma.notification.findMany({
+        where: {
+          entityType: 'PICKUP_BOOKING',
+          entityId: booking.id,
+        },
+      });
+      expect(notifications.length).toBeGreaterThan(0);
+
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'PICKUP_BOOKING',
+          entityId: booking.id,
+          action: 'PICKUP_BOOKING_CANCELLED',
+        },
+      });
+      expect(activityLogs.length).toBeGreaterThan(0);
+    });
+
+    it('should reject cancelling booking when already picked up', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-PICKED-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 500,
+          availableCapacity: 4500,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const slot = await prisma.pickupSlot.create({
+        data: {
+          scheduleId: testSchedule.id,
+          startTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          endTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000),
+          capacity: 1000,
+          usedCapacity: 500,
+          availableCapacity: 500,
+          status: 'BOOKED',
+        },
+      });
+
+      const booking = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 500,
+          location: 'Farm Location',
+          contactPhone: '+254712345678',
+          status: 'picked_up',
+          pickupConfirmed: true,
+          pickupConfirmedAt: new Date(),
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .delete(`/${apiPrefix}/transport/pickup-slots/bookings/${booking.id}`)
+        .set('Authorization', `Bearer ${farmerToken}`)
+        .expect(400);
+
+      expect(response.body.message).toContain('picked_up');
+    });
+
+    it('should confirm pickup → creates batch ID, QR code, and receipt → sends notifications', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-CONFIRM-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 500,
+          availableCapacity: 4500,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const slot = await prisma.pickupSlot.create({
+        data: {
+          scheduleId: testSchedule.id,
+          startTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          endTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000),
+          capacity: 1000,
+          usedCapacity: 500,
+          availableCapacity: 500,
+          status: 'BOOKED',
+        },
+      });
+
+      const booking = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 500,
+          location: 'Farm Location',
+          contactPhone: '+254712345678',
+          status: 'confirmed',
+        },
+      });
+
+      const confirmData = {
+        variety: 'KENYA',
+        qualityGrade: 'A',
+        photos: ['photo1.jpg', 'photo2.jpg'],
+        notes: 'High quality produce',
+      };
+
+      const response = await request(app.getHttpServer())
+        .post(`/${apiPrefix}/transport/pickup-slots/bookings/${booking.id}/confirm`)
+        .set('Authorization', `Bearer ${farmerToken}`)
+        .send(confirmData)
+        .expect(201);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.pickupConfirmed).toBe(true);
+      expect(response.body.data.batchId).toBeDefined();
+      expect(response.body.data.batchId).toMatch(/^BATCH-/);
+      expect(response.body.data.qrCode).toBeDefined();
+      expect(response.body.data.qrCode).toMatch(/^QR-/);
+      expect(response.body.data.status).toBe('picked_up');
+      expect(response.body.data.variety).toBe('KENYA');
+      expect(response.body.data.qualityGrade).toBe('A');
+
+      const receipt = await prisma.pickupReceipt.findUnique({
+        where: { bookingId: booking.id },
+      });
+      expect(receipt).toBeDefined();
+      expect(receipt?.batchId).toBe(response.body.data.batchId);
+      expect(receipt?.qrCode).toBe(response.body.data.qrCode);
+      expect(receipt?.receiptNumber).toBeDefined();
+      expect(receipt?.receiptNumber).toMatch(/^PUR-/);
+
+      const notifications = await prisma.notification.findMany({
+        where: {
+          entityType: 'PICKUP_BOOKING',
+          entityId: booking.id,
+        },
+      });
+      expect(notifications.length).toBeGreaterThan(0);
+
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'PICKUP_BOOKING',
+          entityId: booking.id,
+          action: 'PICKUP_CONFIRMED',
+        },
+      });
+      expect(activityLogs.length).toBeGreaterThan(0);
+    });
+
+    it('should reject confirming pickup when already confirmed', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-ALREADY-CONF-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 500,
+          availableCapacity: 4500,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const slot = await prisma.pickupSlot.create({
+        data: {
+          scheduleId: testSchedule.id,
+          startTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          endTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000),
+          capacity: 1000,
+          usedCapacity: 500,
+          availableCapacity: 500,
+          status: 'BOOKED',
+        },
+      });
+
+      const booking = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 500,
+          location: 'Farm Location',
+          contactPhone: '+254712345678',
+          status: 'picked_up',
+          pickupConfirmed: true,
+          pickupConfirmedAt: new Date(),
+          batchId: 'BATCH-EXISTING',
+          qrCode: 'QR-BATCH-EXISTING',
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .post(`/${apiPrefix}/transport/pickup-slots/bookings/${booking.id}/confirm`)
+        .set('Authorization', `Bearer ${farmerToken}`)
+        .send({ variety: 'KENYA', qualityGrade: 'A' })
+        .expect(400);
+
+      expect(response.body.message).toContain('already confirmed');
+    });
+
+    it('should get pickup receipt by ID', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-RECEIPT-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 0,
+          availableCapacity: 5000,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const slot = await prisma.pickupSlot.create({
+        data: {
+          scheduleId: testSchedule.id,
+          startTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          endTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000),
+          capacity: 1000,
+          usedCapacity: 0,
+          availableCapacity: 1000,
+          status: 'AVAILABLE',
+        },
+      });
+
+      const booking = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 500,
+          location: 'Farm Location',
+          contactPhone: '+254712345678',
+          status: 'picked_up',
+          pickupConfirmed: true,
+          pickupConfirmedAt: new Date(),
+          batchId: 'BATCH-RECEIPT-001',
+          qrCode: 'QR-BATCH-RECEIPT-001',
+        },
+      });
+
+      const receipt = await prisma.pickupReceipt.create({
+        data: {
+          receiptNumber: 'PUR-20250121-000001',
+          bookingId: booking.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          batchId: 'BATCH-RECEIPT-001',
+          qrCode: 'QR-BATCH-RECEIPT-001',
+          quantity: 500,
+          variety: 'KENYA',
+          qualityGrade: 'A',
+          pickupLocation: 'Farm Location',
+          pickupDate: new Date(),
+          pickupTime: '09:00',
+          createdBy: farmerUser.id,
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .get(`/${apiPrefix}/transport/receipts/${receipt.id}`)
+        .set('Authorization', `Bearer ${farmerToken}`)
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.id).toBe(receipt.id);
+      expect(response.body.data.receiptNumber).toBe('PUR-20250121-000001');
+      expect(response.body.data.batchId).toBe('BATCH-RECEIPT-001');
+      expect(response.body.data.qrCode).toBe('QR-BATCH-RECEIPT-001');
+    });
+
+    it('should get pickup receipt by booking ID', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-RECEIPT-BOOKING-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 0,
+          availableCapacity: 5000,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const slot = await prisma.pickupSlot.create({
+        data: {
+          scheduleId: testSchedule.id,
+          startTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          endTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000),
+          capacity: 1000,
+          usedCapacity: 0,
+          availableCapacity: 1000,
+          status: 'AVAILABLE',
+        },
+      });
+
+      const booking = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 500,
+          location: 'Farm Location',
+          contactPhone: '+254712345678',
+          status: 'picked_up',
+          pickupConfirmed: true,
+          pickupConfirmedAt: new Date(),
+          batchId: 'BATCH-BOOKING-001',
+          qrCode: 'QR-BATCH-BOOKING-001',
+        },
+      });
+
+      const receipt = await prisma.pickupReceipt.create({
+        data: {
+          receiptNumber: 'PUR-20250121-000002',
+          bookingId: booking.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          batchId: 'BATCH-BOOKING-001',
+          qrCode: 'QR-BATCH-BOOKING-001',
+          quantity: 500,
+          variety: 'KENYA',
+          qualityGrade: 'A',
+          pickupLocation: 'Farm Location',
+          pickupDate: new Date(),
+          pickupTime: '09:00',
+          createdBy: farmerUser.id,
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .get(`/${apiPrefix}/transport/receipts?bookingId=${booking.id}`)
+        .set('Authorization', `Bearer ${farmerToken}`)
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.id).toBe(receipt.id);
+      expect(response.body.data.bookingId).toBe(booking.id);
+      expect(response.body.data.receiptNumber).toBe('PUR-20250121-000002');
+    });
+
+    it('should get farmer pickup bookings with filters', async () => {
+      testSchedule = await prisma.farmPickupSchedule.create({
+        data: {
+          providerId: transportProviderUser.id,
+          aggregationCenterId: testCenter.id,
+          scheduleNumber: `SCH-BOOKINGS-${Date.now()}`,
+          route: 'Route A',
+          scheduledDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          scheduledTime: '09:00',
+          totalCapacity: 5000,
+          usedCapacity: 0,
+          availableCapacity: 5000,
+          vehicleType: 'TRUCK',
+          status: 'PUBLISHED',
+          publishedAt: new Date(),
+        },
+      });
+
+      const slot = await prisma.pickupSlot.create({
+        data: {
+          scheduleId: testSchedule.id,
+          startTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          endTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000),
+          capacity: 1000,
+          usedCapacity: 0,
+          availableCapacity: 1000,
+          status: 'AVAILABLE',
+        },
+      });
+
+      const booking1 = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 500,
+          location: 'Farm 1',
+          contactPhone: '+254712345678',
+          status: 'confirmed',
+        },
+      });
+
+      const booking2 = await prisma.pickupSlotBooking.create({
+        data: {
+          slotId: slot.id,
+          scheduleId: testSchedule.id,
+          farmerId: farmerUser.id,
+          quantity: 300,
+          location: 'Farm 2',
+          contactPhone: '+254712345679',
+          status: 'picked_up',
+          pickupConfirmed: true,
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .get(`/${apiPrefix}/transport/pickup-slots/bookings?farmerId=${farmerUser.id}`)
+        .set('Authorization', `Bearer ${farmerToken}`)
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.length).toBeGreaterThanOrEqual(2);
+
+      const confirmedResponse = await request(app.getHttpServer())
+        .get(`/${apiPrefix}/transport/pickup-slots/bookings?farmerId=${farmerUser.id}&status=confirmed`)
+        .set('Authorization', `Bearer ${farmerToken}`)
+        .expect(200);
+
+      expect(confirmedResponse.body.success).toBe(true);
+      expect(confirmedResponse.body.data.every((b: any) => b.status === 'confirmed')).toBe(true);
+
+      const scheduleResponse = await request(app.getHttpServer())
+        .get(`/${apiPrefix}/transport/pickup-slots/bookings?farmerId=${farmerUser.id}&scheduleId=${testSchedule.id}`)
+        .set('Authorization', `Bearer ${farmerToken}`)
+        .expect(200);
+
+      expect(scheduleResponse.body.success).toBe(true);
+      expect(scheduleResponse.body.data.every((b: any) => b.scheduleId === testSchedule.id)).toBe(true);
+    });
   });
 
   describe('PRODUCE_PICKUP via Pickup Schedule (Schedule-Linked Transport Requests)', () => {
@@ -645,10 +1453,27 @@ describe('TransportController (e2e)', () => {
         const schedules = await prisma.farmPickupSchedule.findMany({ where: { aggregationCenterId: center.id } });
         const scheduleIds = schedules.map(s => s.id);
         
+        // Delete receipts first (they reference bookings)
+        const bookings = await prisma.pickupSlotBooking.findMany({ where: { scheduleId: { in: scheduleIds } } });
+        const bookingIds = bookings.map(b => b.id);
+        await prisma.pickupReceipt.deleteMany({ where: { bookingId: { in: bookingIds } } });
+        
+        // Then delete bookings
         await prisma.pickupSlotBooking.deleteMany({ where: { scheduleId: { in: scheduleIds } } });
+        
+        // Delete slots
         await prisma.pickupSlot.deleteMany({ where: { scheduleId: { in: scheduleIds } } });
+        
+        // Delete transport requests
         await prisma.transportRequest.deleteMany({ where: { pickupScheduleId: { in: scheduleIds } } });
+        
+        // Delete schedules
         await prisma.farmPickupSchedule.deleteMany({ where: { aggregationCenterId: center.id } });
+        
+        // Delete inventory items
+        await prisma.inventoryItem.deleteMany({ where: { centerId: center.id } });
+        
+        // Finally delete center
         await prisma.aggregationCenter.delete({ where: { id: center.id } });
       }
 

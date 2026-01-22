@@ -2,7 +2,8 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["views"]
 }
 
 datasource db {
@@ -77,6 +78,9 @@ model User {
   wastageEntriesAsFarmer    WastageEntry[]      @relation("WastageEntryFarmer")
   qualityChecksAsFarmer     QualityCheck[]      @relation("QualityCheckFarmer")
   advisories                Advisory[]
+  buyerRecurringOrders      RecurringOrder[]    @relation("BuyerRecurringOrders")
+  farmerRecurringOrders     RecurringOrder[]    @relation("FarmerRecurringOrders")
+  badgeProgress             BadgeProgress[]     @relation("UserBadges")
 
   @@index([email])
   @@index([phone])
@@ -146,6 +150,9 @@ model Profile {
   @@index([userId])
   @@index([county])
   @@index([ward])
+  // Analytics indexes - for filtering and growth calculations
+  @@index([subCounty])
+  @@index([createdAt])
   @@map("profiles")
 }
 
@@ -312,6 +319,10 @@ model ProduceListing {
   @@index([qualityGrade])
   @@index([county])
   @@index([batchId])
+  // Analytics optimization indexes
+  @@index([status, variety])
+  @@index([variety, qualityGrade])
+  @@index([county, status])
   @@map("produce_listings")
 }
 
@@ -396,6 +407,10 @@ model MarketplaceOrder {
   @@index([sourcingRequestId])
   @@index([supplierOfferId])
   @@index([paymentStatus])
+  // Analytics indexes - composite indexes for date range queries
+  @@index([farmerId, createdAt])
+  @@index([buyerId, createdAt])
+  @@index([status, createdAt])
   @@map("marketplace_orders")
 }
 
@@ -578,6 +593,9 @@ model RFQ {
   @@index([status])
   @@index([rfqNumber])
   @@index([quoteDeadline])
+  // Analytics optimization indexes
+  @@index([variety, status])
+  @@index([status, quoteDeadline])
   @@map("rfqs")
 }
 
@@ -688,6 +706,9 @@ model SourcingRequest {
   @@index([status])
   @@index([requestId])
   @@index([deadline])
+  // Analytics optimization indexes
+  @@index([variety, status])
+  @@index([status, deadline])
   @@map("sourcing_requests")
 }
 
@@ -739,7 +760,9 @@ model RecurringOrder {
   id String @id @default(uuid())
 
   buyerId  String
+  buyer    User   @relation("BuyerRecurringOrders", fields: [buyerId], references: [id])
   farmerId String
+  farmer   User   @relation("FarmerRecurringOrders", fields: [farmerId], references: [id])
 
   variety      OFSPVariety
   quantity     Float // kg
@@ -1231,6 +1254,9 @@ model StockTransaction {
   @@index([type])
   @@index([orderId])
   @@index([createdAt])
+  // Analytics indexes - composite indexes for date range queries
+  @@index([centerId, createdAt])
+  @@index([type, createdAt])
   @@map("stock_transactions")
 }
 
@@ -1243,6 +1269,7 @@ model InventoryItem {
   // Product Details
   variety      String
   quantity     Float // kg
+  unit         String?      @default("kg") // "kg" | "tons" | "units"
   qualityGrade QualityGrade
 
   // Batch Info
@@ -1272,6 +1299,8 @@ model InventoryItem {
   @@index([batchId])
   @@index([status])
   @@index([stockInDate])
+  // Analytics indexes - composite index for filtering active inventory by center
+  @@index([centerId, status])
   @@map("inventory_items")
 }
 
@@ -1334,6 +1363,8 @@ model QualityCheck {
   @@index([transactionId])
   @@index([checkedBy])
   @@index([checkedAt])
+  // Analytics indexes - composite indexes for date range queries
+  @@index([farmerId, checkedAt])
   @@map("quality_checks")
 }
 
@@ -1583,6 +1614,8 @@ model InputOrder {
   @@index([inputId])
   @@index([status])
   @@index([orderNumber])
+  // Analytics optimization indexes
+  @@index([status, createdAt])
   @@map("input_orders")
 }
 
@@ -1620,6 +1653,9 @@ model Rating {
   @@index([ratedUserId])
   @@index([orderId])
   @@index([raterId])
+  // Analytics indexes - composite indexes for date range queries
+  @@index([ratedUserId, createdAt])
+  @@index([raterId, createdAt])
   @@map("ratings")
 }
 
@@ -1659,4 +1695,192 @@ model Advisory {
   @@index([isActive])
   @@index([targetValue])
   @@map("advisories")
+}
+
+model Badge {
+  id          String   @id @default(uuid())
+  type        String   @unique // e.g., "first_sale", "hundred_kg", etc.
+  name        String
+  description String
+  category    String   // "sales", "quality", "performance", etc.
+  targetValue Float?   // Target value for milestone badges (e.g., 100 for 100kg)
+  icon        String?  // Icon identifier
+  color       String?  // Color code
+  bgColor     String?  // Background color code
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  progress BadgeProgress[]
+
+  @@map("badges")
+}
+
+model BadgeProgress {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation("UserBadges", fields: [userId], references: [id])
+  badgeId     String
+  badge       Badge    @relation(fields: [badgeId], references: [id])
+  currentValue Float   @default(0) // Current progress value
+  isEarned    Boolean  @default(false)
+  earnedAt    DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, badgeId])
+  @@index([userId])
+  @@index([badgeId])
+  @@index([isEarned])
+  @@map("badge_progress")
+}
+
+// ============================================
+// ANALYTICS MATERIALIZED VIEWS
+// ============================================
+
+// Materialized View: Daily Order Summary
+// Purpose: Daily aggregations of orders, revenue, and volume for fast trend queries
+view DailyOrderSummary {
+  date            DateTime @db.Date
+  totalOrders     Int
+  uniqueFarmers   Int
+  uniqueBuyers    Int
+  revenue         Float?
+  volume          Float?
+  completedOrders Int
+  averageOrderValue Float?
+
+  @@map("daily_order_summary")
+}
+
+// Materialized View: Monthly Farmer Statistics
+// Purpose: Monthly aggregations of farmer performance metrics for leaderboards and analytics
+view MonthlyFarmerStatistics {
+  month           DateTime @db.Date
+  farmerId        String
+  userId          String
+  farmerName      String?
+  subCounty       String?
+  county          String?
+  orderCount      Int
+  revenue         Float?
+  volume          Float?
+  completedOrders Int
+  averageRating   Float
+  ratingCount     Int
+
+  @@map("monthly_farmer_statistics")
+}
+
+// Materialized View: Center Utilization Summary
+// Purpose: Aggregation center utilization and stock metrics for fast analytics queries
+view CenterUtilizationSummary {
+  centerId        String
+  centerName      String?
+  centerCode      String?
+  county          String?
+  subCounty       String?
+  totalCapacity   Float?
+  currentStock    Float?
+  availableCapacity Float?
+  utilizationRate Float?
+  totalBatches    Int
+  freshBatches    Int
+  agingBatches    Int
+  criticalBatches Int
+  totalTransactions Int
+  totalStockIn    Float?
+  totalStockOut   Float?
+
+  @@map("center_utilization_summary")
+}
+
+// Materialized View: Weekly Buyer Sourcing
+// Purpose: Weekly buyer sourcing patterns and procurement metrics
+view WeeklyBuyerSourcing {
+  week                DateTime @db.Date
+  buyerId             String
+  userId              String
+  buyerName           String?
+  orderCount          Int
+  uniqueSuppliers     Int
+  procurementValue    Float?
+  volumeSourced       Float?
+  directOrders        Int
+  rfqOrders           Int
+  sourcingRequestOrders Int
+
+  @@map("weekly_buyer_sourcing")
+}
+
+// ============================================
+// OPTIMIZATION MATERIALIZED VIEWS
+// ============================================
+
+view PlatformMetricsSummary {
+  date            DateTime @db.Date
+  revenue         Float?
+  volume          Float?
+  totalOrders     Int
+  completedOrders Int
+  activeFarmers   Int
+  activeBuyers    Int
+  averagePrice    Float?
+  platformFee     Float?
+
+  @@map("platform_metrics_summary")
+}
+
+view FarmerLeaderboardMonthly {
+  month           DateTime @db.Date
+  farmerId        String
+  farmerName      String?
+  subCounty       String?
+  county          String?
+  revenue         Float?
+  volume          Float?
+  totalOrders     Int
+  completedOrders Int
+  averageRating   Float?
+  ratingCount     Int
+
+  @@map("farmer_leaderboard_monthly")
+}
+
+view MarketPriceSummary {
+  week          DateTime @db.Date
+  variety       String
+  grade         String
+  location      String
+  averagePrice  Float?
+  minPrice      Float?
+  maxPrice      Float?
+  listingCount  Int
+  totalQuantity Float?
+
+  @@map("market_price_summary")
+}
+
+view BuyerDemandSummary {
+  week                DateTime @db.Date
+  variety             String
+  grade               String
+  location            String
+  totalBuyerCount     Int
+  totalQuantityNeeded Float?
+  sourceType          String   @map("source_type")
+
+  @@map("buyer_demand_summary")
+}
+
+view UserGrowthSummary {
+  month         DateTime @db.Date
+  role          String
+  county        String?
+  subCounty     String?
+  newUsers      Int
+  verifiedUsers Int
+
+  @@map("user_growth_summary")
 }

@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationHelperService } from '../../common/services/notification.service';
 import { ActivityLogService } from '../../common/services/activity-log.service';
 import { generateBatchTraceability } from '../../common/utils/traceability.util';
+import { BadgeService } from '../badge/badge.service';
 import {
   CreateListingDto,
   UpdateListingDto,
@@ -11,6 +12,7 @@ import {
   CreateRFQDto,
   CreateRFQResponseDto,
   CreateSourcingRequestDto,
+  UpdateSourcingRequestDto,
   CreateSupplierOfferDto,
   CreateNegotiationDto,
   SendNegotiationMessageDto,
@@ -22,6 +24,8 @@ export class MarketplaceService {
     private prisma: PrismaService,
     private notificationHelperService: NotificationHelperService,
     private activityLogService: ActivityLogService,
+    @Inject(forwardRef(() => BadgeService))
+    private badgeService?: BadgeService,
   ) {}
 
   // Helper to convert DTO variety enum to Prisma enum format
@@ -473,6 +477,14 @@ export class MarketplaceService {
     // Create activity log
     await this.activityLogService.logOrderStatusChange(updatedOrder, oldStatus, newStatus, userId);
 
+    // Check badges if order is completed or delivered
+    if ((newStatus === 'COMPLETED' || newStatus === 'DELIVERED') && updatedOrder.farmerId) {
+      // Check badges asynchronously (don't block order update)
+      this.badgeService?.checkBadgesOnOrderCompletion(updatedOrder.farmerId, id).catch(error => {
+        console.error('Error checking badges:', error);
+      });
+    }
+
     return updatedOrder;
   }
 
@@ -645,6 +657,10 @@ export class MarketplaceService {
       throw new BadRequestException('You can only publish your own RFQs');
     }
 
+    if (rfq.status !== 'DRAFT') {
+      throw new BadRequestException('Only draft RFQs can be published');
+    }
+
     const updatedRFQ = await this.prisma.rFQ.update({
       where: { id },
       data: { 
@@ -653,24 +669,56 @@ export class MarketplaceService {
       },
     });
 
-    // Create notifications (per lifecycle: buyer, and potentially suppliers)
+    // Get relevant suppliers (farmers) to notify
+    // TODO: Enhance this to filter by location, preferences, etc. based on RFQ requirements
+    // For now, we'll notify all active farmers
+    let relevantSuppliers: Array<{ id: string }> = [];
     try {
-      await this.notificationHelperService.createNotification({
-        userId: buyerId,
-        type: 'RFQ',
-        title: 'RFQ Published',
-        message: `RFQ #${rfq.rfqNumber} published successfully`,
-        priority: 'MEDIUM',
-        entityType: 'RFQ',
-        entityId: id,
-        actionUrl: `/rfqs/${id}`,
-        actionLabel: 'View RFQ',
-        metadata: { rfqNumber: rfq.rfqNumber },
+      relevantSuppliers = await this.prisma.user.findMany({
+        where: {
+          role: 'FARMER',
+          status: 'ACTIVE',
+        },
+        select: { id: true },
       });
-      // Note: Supplier notifications would typically be sent via a notification service
-      // that broadcasts to all relevant suppliers based on their preferences
     } catch (error) {
-      console.error('Failed to create notification for RFQ publish:', error);
+      console.error('Failed to fetch suppliers for RFQ notification:', error);
+    }
+
+    // Create notifications (per lifecycle: buyer, and all relevant suppliers)
+    try {
+      await Promise.all([
+        // To Buyer
+        this.notificationHelperService.createNotification({
+          userId: buyerId,
+          type: 'RFQ',
+          title: 'RFQ Published',
+          message: `RFQ #${rfq.rfqNumber} published successfully`,
+          priority: 'MEDIUM',
+          entityType: 'RFQ',
+          entityId: id,
+          actionUrl: `/rfqs/${id}`,
+          actionLabel: 'View RFQ',
+          metadata: { rfqNumber: rfq.rfqNumber },
+        }),
+        // To all relevant suppliers (per lifecycle requirements)
+        ...relevantSuppliers.map(supplier =>
+          this.notificationHelperService.createNotification({
+            userId: supplier.id,
+            type: 'RFQ',
+            title: 'New RFQ Published',
+            message: `New RFQ published: ${rfq.title || rfq.rfqNumber}`,
+            priority: 'MEDIUM',
+            entityType: 'RFQ',
+            entityId: id,
+            actionUrl: `/rfqs/${id}`,
+            actionLabel: 'View RFQ',
+            metadata: { rfqNumber: rfq.rfqNumber },
+          })
+        ),
+      ]);
+    } catch (error) {
+      console.error('Failed to create notifications for RFQ publish:', error);
     }
 
     // Create activity logs
@@ -680,7 +728,7 @@ export class MarketplaceService {
         action: 'RFQ_PUBLISHED',
         entityType: 'RFQ',
         entityId: id,
-        metadata: { rfqNumber: rfq.rfqNumber },
+        metadata: { rfqNumber: rfq.rfqNumber, suppliersNotified: relevantSuppliers.length },
       });
     } catch (error) {
       console.error('Failed to create activity log for RFQ publish:', error);
@@ -696,6 +744,10 @@ export class MarketplaceService {
       throw new BadRequestException('You can only close your own RFQs');
     }
 
+    if (rfq.status === 'CLOSED' || rfq.status === 'CANCELLED') {
+      throw new BadRequestException(`RFQ is already ${rfq.status.toLowerCase()}`);
+    }
+
     const updatedRFQ = await this.prisma.rFQ.update({
       where: { id },
       data: { 
@@ -704,23 +756,46 @@ export class MarketplaceService {
       },
     });
 
-    // Create notifications (per lifecycle: buyer, and potentially suppliers)
+    // Get all suppliers who submitted responses for notifications
+    const responses = await this.prisma.rFQResponse.findMany({
+      where: { rfqId: id },
+      select: { supplierId: true },
+    });
+
+    // Create notifications (per lifecycle: buyer, and all suppliers)
     try {
-      await this.notificationHelperService.createNotification({
-        userId: buyerId,
-        type: 'RFQ',
-        title: 'RFQ Closed',
-        message: `RFQ #${rfq.rfqNumber} closed`,
-        priority: 'MEDIUM',
-        entityType: 'RFQ',
-        entityId: id,
-        actionUrl: `/rfqs/${id}`,
-        actionLabel: 'View RFQ',
-        metadata: { rfqNumber: rfq.rfqNumber },
-      });
-      // Note: Supplier notifications would typically be sent to all suppliers who submitted responses
+      await Promise.all([
+        // To Buyer
+        this.notificationHelperService.createNotification({
+          userId: buyerId,
+          type: 'RFQ',
+          title: 'RFQ Closed',
+          message: `RFQ #${rfq.rfqNumber} closed`,
+          priority: 'MEDIUM',
+          entityType: 'RFQ',
+          entityId: id,
+          actionUrl: `/rfqs/${id}`,
+          actionLabel: 'View RFQ',
+          metadata: { rfqNumber: rfq.rfqNumber },
+        }),
+        // To all suppliers who submitted responses
+        ...responses.map(response =>
+          this.notificationHelperService.createNotification({
+            userId: response.supplierId,
+            type: 'RFQ',
+            title: 'RFQ Closed',
+            message: `RFQ #${rfq.rfqNumber} has been closed`,
+            priority: 'MEDIUM',
+            entityType: 'RFQ',
+            entityId: id,
+            actionUrl: `/rfqs/${id}`,
+            actionLabel: 'View RFQ',
+            metadata: { rfqNumber: rfq.rfqNumber },
+          })
+        ),
+      ]);
     } catch (error) {
-      console.error('Failed to create notification for RFQ close:', error);
+      console.error('Failed to create notifications for RFQ close:', error);
     }
 
     // Create activity logs
@@ -734,6 +809,126 @@ export class MarketplaceService {
       });
     } catch (error) {
       console.error('Failed to create activity log for RFQ close:', error);
+    }
+
+    return updatedRFQ;
+  }
+
+  async cancelRFQ(id: string, buyerId: string, reason?: string) {
+    const rfq = await this.getRFQById(id);
+
+    if (rfq.buyerId !== buyerId) {
+      throw new BadRequestException('You can only cancel your own RFQs');
+    }
+
+    if (rfq.status === 'CLOSED' || rfq.status === 'CANCELLED' || rfq.status === 'AWARDED') {
+      throw new BadRequestException(`Cannot cancel RFQ in ${rfq.status} status`);
+    }
+
+    // Update RFQ and all responses in a transaction
+    const [updatedRFQ] = await Promise.all([
+      this.prisma.rFQ.update({
+        where: { id },
+        data: { 
+          status: 'CANCELLED',
+          closedAt: new Date(),
+        },
+      }),
+      // Mark all responses as withdrawn
+      this.prisma.rFQResponse.updateMany({
+        where: { rfqId: id, status: { not: 'WITHDRAWN' } },
+        data: { status: 'WITHDRAWN' },
+      }),
+    ]);
+
+    // Get all suppliers who submitted responses for notifications
+    const responses = await this.prisma.rFQResponse.findMany({
+      where: { rfqId: id },
+      select: { supplierId: true },
+    });
+
+    // Create notifications (per lifecycle: buyer, and all suppliers)
+    try {
+      await Promise.all([
+        // To Buyer
+        this.notificationHelperService.createNotification({
+          userId: buyerId,
+          type: 'RFQ',
+          title: 'RFQ Cancelled',
+          message: `RFQ #${rfq.rfqNumber} cancelled`,
+          priority: 'MEDIUM',
+          entityType: 'RFQ',
+          entityId: id,
+          actionUrl: `/rfqs/${id}`,
+          actionLabel: 'View RFQ',
+          metadata: { rfqNumber: rfq.rfqNumber, reason },
+        }),
+        // To all suppliers who submitted responses
+        ...responses.map(response =>
+          this.notificationHelperService.createNotification({
+            userId: response.supplierId,
+            type: 'RFQ',
+            title: 'RFQ Cancelled',
+            message: `RFQ #${rfq.rfqNumber} has been cancelled`,
+            priority: 'MEDIUM',
+            entityType: 'RFQ',
+            entityId: id,
+            actionUrl: `/rfqs/${id}`,
+            actionLabel: 'View RFQ',
+            metadata: { rfqNumber: rfq.rfqNumber },
+          })
+        ),
+      ]);
+    } catch (error) {
+      console.error('Failed to create notifications for RFQ cancellation:', error);
+    }
+
+    // Create activity logs
+    try {
+      await this.activityLogService.createActivityLog({
+        userId: buyerId,
+        action: 'RFQ_CANCELLED',
+        entityType: 'RFQ',
+        entityId: id,
+        metadata: { rfqNumber: rfq.rfqNumber, reason },
+      });
+    } catch (error) {
+      console.error('Failed to create activity log for RFQ cancellation:', error);
+    }
+
+    return updatedRFQ;
+  }
+
+  async setRFQEvaluating(id: string, buyerId: string) {
+    const rfq = await this.getRFQById(id);
+
+    if (rfq.buyerId !== buyerId) {
+      throw new BadRequestException('You can only update your own RFQs');
+    }
+
+    if (rfq.status !== 'PUBLISHED') {
+      throw new BadRequestException('RFQ must be published to set evaluating status');
+    }
+
+    const updatedRFQ = await this.prisma.rFQ.update({
+      where: { id },
+      data: { 
+        status: 'EVALUATING',
+        evaluationDeadline: rfq.evaluationDeadline || null,
+      },
+    });
+
+    // Create activity logs
+    try {
+      await this.activityLogService.createActivityLog({
+        userId: buyerId,
+        action: 'RFQ_EVALUATING',
+        entityType: 'RFQ',
+        entityId: id,
+        metadata: { rfqNumber: rfq.rfqNumber },
+      });
+    } catch (error) {
+      console.error('Failed to create activity log for RFQ evaluating:', error);
     }
 
     return updatedRFQ;
@@ -932,9 +1127,22 @@ export class MarketplaceService {
       throw new BadRequestException('You can only update responses to your own RFQs');
     }
 
-    return this.prisma.rFQResponse.update({
+    // Validate status transition
+    const validStatuses = ['SUBMITTED', 'UNDER_REVIEW', 'SHORTLISTED', 'AWARDED', 'REJECTED', 'WITHDRAWN'];
+    if (!validStatuses.includes(status)) {
+      throw new BadRequestException(`Invalid status: ${status}`);
+    }
+
+    const updateData: any = { status: status as any };
+    
+    // Set timestamps based on status (using evaluatedAt for review-related statuses)
+    if (status === 'UNDER_REVIEW' || status === 'SHORTLISTED' || status === 'REJECTED') {
+      updateData.evaluatedAt = new Date();
+    }
+
+    const updatedResponse = await this.prisma.rFQResponse.update({
       where: { id },
-      data: { status: status as any },
+      data: updateData,
       include: {
         rfq: true,
         supplier: {
@@ -944,6 +1152,72 @@ export class MarketplaceService {
         },
       },
     });
+
+    // Create notifications based on status (per lifecycle)
+    try {
+      const supplierName = updatedResponse.supplier.profile?.firstName || 'Supplier';
+      
+      if (status === 'SHORTLISTED') {
+        await Promise.all([
+          // To Supplier
+          this.notificationHelperService.createNotification({
+            userId: response.supplierId,
+            type: 'RFQ_RESPONSE',
+            title: 'Quote Shortlisted',
+            message: `Your quote for RFQ #${rfq.rfqNumber} has been shortlisted`,
+            priority: 'MEDIUM',
+            entityType: 'RFQ_RESPONSE',
+            entityId: id,
+            actionUrl: `/rfqs/${rfq.id}/responses/${id}`,
+            actionLabel: 'View Response',
+            metadata: { rfqNumber: rfq.rfqNumber },
+          }),
+          // To Buyer
+          this.notificationHelperService.createNotification({
+            userId: buyerId,
+            type: 'RFQ',
+            title: 'Response Shortlisted',
+            message: `Response from ${supplierName} shortlisted for RFQ #${rfq.rfqNumber}`,
+            priority: 'LOW',
+            entityType: 'RFQ',
+            entityId: rfq.id,
+            actionUrl: `/rfqs/${rfq.id}/responses`,
+            actionLabel: 'View Responses',
+            metadata: { rfqNumber: rfq.rfqNumber, responseId: id },
+          }),
+        ]);
+      } else if (status === 'REJECTED') {
+        await this.notificationHelperService.createNotification({
+          userId: response.supplierId,
+          type: 'RFQ_RESPONSE',
+          title: 'Quote Rejected',
+          message: `Your quote for RFQ #${rfq.rfqNumber} has been rejected`,
+          priority: 'LOW',
+          entityType: 'RFQ_RESPONSE',
+          entityId: id,
+          actionUrl: `/rfqs/${rfq.id}/responses/${id}`,
+          actionLabel: 'View Response',
+          metadata: { rfqNumber: rfq.rfqNumber },
+        });
+      }
+    } catch (error) {
+      console.error('Failed to create notifications for RFQ response status update:', error);
+    }
+
+    // Create activity logs
+    try {
+      await this.activityLogService.createActivityLog({
+        userId: buyerId,
+        action: `RFQ_RESPONSE_${status}`,
+        entityType: 'RFQ_RESPONSE',
+        entityId: id,
+        metadata: { rfqId: rfq.id, rfqNumber: rfq.rfqNumber, supplierId: response.supplierId },
+      });
+    } catch (error) {
+      console.error('Failed to create activity log for RFQ response status update:', error);
+    }
+
+    return updatedResponse;
   }
 
   async awardRFQ(rfqId: string, responseId: string, buyerId: string) {
@@ -953,19 +1227,252 @@ export class MarketplaceService {
       throw new BadRequestException('You can only award your own RFQs');
     }
 
-    // Update response status to AWARDED
-    const response = await this.prisma.rFQResponse.update({
-      where: { id: responseId },
-      data: { status: 'AWARDED' },
+    const response = await this.getRFQResponseById(responseId);
+    if (response.rfqId !== rfqId) {
+      throw new BadRequestException('Response does not belong to this RFQ');
+    }
+
+    // Get all responses to notify other suppliers
+    const allResponses = await this.prisma.rFQResponse.findMany({
+      where: { rfqId },
+      select: { id: true, supplierId: true, status: true },
     });
 
-    // Update RFQ status
-    await this.prisma.rFQ.update({
-      where: { id: rfqId },
-      data: { status: 'AWARDED' },
+    // Update response status to AWARDED and RFQ status
+    const [updatedResponse, updatedRFQ] = await Promise.all([
+      this.prisma.rFQResponse.update({
+        where: { id: responseId },
+        data: { 
+          status: 'AWARDED',
+          awardedAt: new Date(),
+        },
+        include: {
+          supplier: {
+            include: {
+              profile: true,
+            },
+          },
+        },
+      }),
+      this.prisma.rFQ.update({
+        where: { id: rfqId },
+        data: { 
+          status: 'AWARDED',
+          awardedAt: new Date(),
+        },
+      }),
+    ]);
+
+    // Create notifications (per lifecycle: buyer, awarded supplier, other suppliers)
+    try {
+      const supplierName = updatedResponse.supplier.profile?.firstName || 'Supplier';
+      await Promise.all([
+        // To Buyer
+        this.notificationHelperService.createNotification({
+          userId: buyerId,
+          type: 'RFQ',
+          title: 'RFQ Awarded',
+          message: `RFQ #${rfq.rfqNumber} awarded to ${supplierName}`,
+          priority: 'HIGH',
+          entityType: 'RFQ',
+          entityId: rfqId,
+          actionUrl: `/rfqs/${rfqId}`,
+          actionLabel: 'View RFQ',
+          metadata: { rfqNumber: rfq.rfqNumber, responseId },
+        }),
+        // To Awarded Supplier
+        this.notificationHelperService.createNotification({
+          userId: response.supplierId,
+          type: 'RFQ_RESPONSE',
+          title: 'RFQ Awarded',
+          message: `Congratulations! Your quote for RFQ #${rfq.rfqNumber} has been awarded`,
+          priority: 'HIGH',
+          entityType: 'RFQ_RESPONSE',
+          entityId: responseId,
+          actionUrl: `/rfqs/${rfqId}/responses/${responseId}`,
+          actionLabel: 'View Response',
+          metadata: { rfqNumber: rfq.rfqNumber },
+        }),
+        // To Other Suppliers
+        ...allResponses
+          .filter(r => r.id !== responseId && r.status !== 'WITHDRAWN')
+          .map(r =>
+            this.notificationHelperService.createNotification({
+              userId: r.supplierId,
+              type: 'RFQ',
+              title: 'RFQ Awarded',
+              message: `RFQ #${rfq.rfqNumber} has been awarded to another supplier`,
+              priority: 'MEDIUM',
+              entityType: 'RFQ',
+              entityId: rfqId,
+              actionUrl: `/rfqs/${rfqId}`,
+              actionLabel: 'View RFQ',
+              metadata: { rfqNumber: rfq.rfqNumber },
+            })
+          ),
+      ]);
+    } catch (error) {
+      console.error('Failed to create notifications for RFQ award:', error);
+    }
+
+    // Create activity logs
+    try {
+      await Promise.all([
+        this.activityLogService.createActivityLog({
+          userId: buyerId,
+          action: 'RFQ_AWARDED',
+          entityType: 'RFQ',
+          entityId: rfqId,
+          metadata: { rfqNumber: rfq.rfqNumber, responseId, supplierId: response.supplierId },
+        }),
+        this.activityLogService.createActivityLog({
+          userId: response.supplierId,
+          action: 'RFQ_RESPONSE_AWARDED',
+          entityType: 'RFQ_RESPONSE',
+          entityId: responseId,
+          metadata: { rfqId, rfqNumber: rfq.rfqNumber },
+        }),
+      ]);
+    } catch (error) {
+      console.error('Failed to create activity logs for RFQ award:', error);
+    }
+
+    return updatedResponse;
+  }
+
+  async convertRFQResponseToOrder(rfqId: string, responseId: string, buyerId: string, deliveryAddress?: string, deliveryCounty?: string) {
+    const rfq = await this.getRFQById(rfqId);
+    const response = await this.getRFQResponseById(responseId);
+
+    if (rfq.buyerId !== buyerId) {
+      throw new BadRequestException('You can only convert responses from your own RFQs');
+    }
+
+    if (response.rfqId !== rfqId) {
+      throw new BadRequestException('Response does not belong to this RFQ');
+    }
+
+    if (response.status !== 'AWARDED') {
+      throw new BadRequestException('Only awarded RFQ responses can be converted to orders');
+    }
+
+    // Generate order number
+    const orderNumber = await this.prisma.$queryRaw<Array<{ generate_order_number: string }>>`
+      SELECT generate_order_number() as generate_order_number
+    `;
+
+    // Generate batch ID and QR code
+    const { batchId, qrCode } = generateBatchTraceability();
+
+    const totalAmount = response.totalAmount;
+
+    // Get buyer and supplier info
+    const [buyer, supplier] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: buyerId },
+        include: { profile: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: response.supplierId },
+        include: { profile: true },
+      }),
+    ]);
+
+    // Create order from RFQ response
+    const order = await this.prisma.marketplaceOrder.create({
+      data: {
+        buyerId,
+        farmerId: response.supplierId,
+        orderNumber: orderNumber[0].generate_order_number,
+        rfqId: rfqId,
+        rfqResponseId: responseId,
+        variety: rfq.variety!,
+        quantity: response.quantity,
+        pricePerKg: response.pricePerUnit,
+        totalAmount,
+        deliveryAddress: deliveryAddress || rfq.deliveryLocation || '',
+        deliveryCounty: deliveryCounty || '',
+        batchId,
+        qrCode,
+        status: 'ORDER_PLACED',
+      },
+      include: {
+        buyer: {
+          include: {
+            profile: true,
+          },
+        },
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+        rfq: true,
+        rfqResponse: true,
+      },
     });
 
-    return response;
+    // Update RFQ response to track conversion (if needed)
+    // Note: Status remains AWARDED, but we link the order
+
+    // Create notifications (per lifecycle: buyer, supplier)
+    try {
+      const supplierName = supplier?.profile?.firstName || 'Supplier';
+      await Promise.all([
+        // To Buyer
+        this.notificationHelperService.createNotification({
+          userId: buyerId,
+          type: 'ORDER',
+          title: 'Order Created from RFQ',
+          message: `Order #${order.orderNumber} created from RFQ #${rfq.rfqNumber}`,
+          priority: 'MEDIUM',
+          entityType: 'ORDER',
+          entityId: order.id,
+          actionUrl: `/orders/${order.id}`,
+          actionLabel: 'View Order',
+          metadata: { orderNumber: order.orderNumber, rfqNumber: rfq.rfqNumber },
+        }),
+        // To Supplier
+        this.notificationHelperService.createNotification({
+          userId: response.supplierId,
+          type: 'ORDER',
+          title: 'Order Created from RFQ',
+          message: `RFQ #${rfq.rfqNumber} converted to order #${order.orderNumber}`,
+          priority: 'HIGH',
+          entityType: 'ORDER',
+          entityId: order.id,
+          actionUrl: `/orders/${order.id}`,
+          actionLabel: 'View Order',
+          metadata: { orderNumber: order.orderNumber, rfqNumber: rfq.rfqNumber },
+        }),
+      ]);
+    } catch (error) {
+      console.error('Failed to create notifications for RFQ conversion:', error);
+    }
+
+    // Create activity logs
+    try {
+      await Promise.all([
+        this.activityLogService.createActivityLog({
+          userId: buyerId,
+          action: 'RFQ_CONVERTED_TO_ORDER',
+          entityType: 'ORDER',
+          entityId: order.id,
+          metadata: { orderNumber: order.orderNumber, rfqId, rfqNumber: rfq.rfqNumber, responseId },
+        }),
+        this.activityLogService.createActivityLog({
+          userId: response.supplierId,
+          action: 'RFQ_RESPONSE_CONVERTED_TO_ORDER',
+          entityType: 'ORDER',
+          entityId: order.id,
+          metadata: { orderNumber: order.orderNumber, rfqId, rfqNumber: rfq.rfqNumber },
+        }),
+      ]);
+    } catch (error) {
+      console.error('Failed to create activity logs for RFQ conversion:', error);
+    }
+
+    return order;
   }
 
   // ============ Sourcing Requests ============
@@ -1099,6 +1606,83 @@ export class MarketplaceService {
     }
 
     return sourcingRequest;
+  }
+
+  async updateSourcingRequest(
+    id: string,
+    data: UpdateSourcingRequestDto,
+    buyerId: string,
+  ) {
+    const request = await this.getSourcingRequestById(id);
+
+    // Validate ownership
+    if (request.buyerId !== buyerId) {
+      throw new BadRequestException('You can only update your own sourcing requests');
+    }
+
+    // Only allow updates when in DRAFT status (per lifecycle: draft → open → closed/fulfilled)
+    if (request.status !== 'DRAFT') {
+      throw new BadRequestException('Only draft sourcing requests can be updated');
+    }
+
+    // Build update data
+    const updateData: any = {};
+
+    if (data.title !== undefined) {
+      updateData.title = data.title;
+    }
+    if (data.productType !== undefined) {
+      updateData.productType = data.productType as any;
+    }
+    if (data.variety !== undefined) {
+      updateData.variety = data.variety as any;
+    }
+    if (data.quantity !== undefined) {
+      updateData.quantity = data.quantity;
+    }
+    if (data.unit !== undefined) {
+      updateData.unit = data.unit;
+    }
+    if (data.qualityGrade !== undefined) {
+      updateData.qualityGrade = data.qualityGrade as any;
+    }
+    if (data.deliveryDate !== undefined) {
+      updateData.deadline = new Date(data.deliveryDate);
+    }
+    if (data.deliveryLocation !== undefined) {
+      updateData.deliveryLocation = data.deliveryLocation;
+    }
+    if (data.description !== undefined) {
+      updateData.additionalRequirements = data.description;
+    }
+
+    // Update the sourcing request
+    const updatedRequest = await this.prisma.sourcingRequest.update({
+      where: { id },
+      data: updateData,
+      include: {
+        buyer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    // Create activity log (per lifecycle: updates tracked)
+    try {
+      await this.activityLogService.createActivityLog({
+        userId: buyerId,
+        action: 'SOURCING_REQUEST_UPDATED',
+        entityType: 'SOURCING_REQUEST',
+        entityId: id,
+        metadata: { requestId: request.requestId, updatedFields: Object.keys(updateData) },
+      });
+    } catch (error) {
+      console.error('Failed to create activity log for sourcing request update:', error);
+    }
+
+    return updatedRequest;
   }
 
   async publishSourcingRequest(id: string, buyerId: string) {
@@ -1835,14 +2419,251 @@ export class MarketplaceService {
     return updatedNegotiation;
   }
 
+  // ============ Recurring Orders ============
+
+  async getRecurringOrders(filters?: {
+    buyerId?: string;
+    farmerId?: string;
+    isActive?: boolean;
+  }) {
+    const where: any = {};
+
+    if (filters?.buyerId) {
+      where.buyerId = filters.buyerId;
+    }
+    if (filters?.farmerId) {
+      where.farmerId = filters.farmerId;
+    }
+    if (filters?.isActive !== undefined) {
+      where.isActive = filters.isActive;
+    }
+
+    return this.prisma.recurringOrder.findMany({
+      where,
+      include: {
+        buyer: {
+          include: {
+            profile: true,
+          },
+        },
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async getRecurringOrderById(id: string) {
+    const order = await this.prisma.recurringOrder.findUnique({
+      where: { id },
+      include: {
+        buyer: {
+          include: {
+            profile: true,
+          },
+        },
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Recurring order with ID ${id} not found`);
+    }
+
+    return order;
+  }
+
+  async createRecurringOrder(data: {
+    buyerId: string;
+    farmerId: string;
+    variety: string;
+    quantity: number;
+    qualityGrade: string;
+    pricePerKg: number;
+    frequency: string;
+    startDate: string;
+    endDate?: string;
+    nextDeliveryDate: string;
+  }, buyerId: string) {
+    if (data.buyerId !== buyerId) {
+      throw new BadRequestException('You can only create recurring orders for yourself');
+    }
+
+    const recurringOrder = await this.prisma.recurringOrder.create({
+      data: {
+        buyerId: data.buyerId,
+        farmerId: data.farmerId,
+        variety: data.variety as any,
+        quantity: data.quantity,
+        qualityGrade: data.qualityGrade as any,
+        pricePerKg: data.pricePerKg,
+        frequency: data.frequency as any,
+        startDate: new Date(data.startDate),
+        endDate: data.endDate ? new Date(data.endDate) : null,
+        nextDeliveryDate: new Date(data.nextDeliveryDate),
+        isActive: true,
+        status: 'active',
+      },
+    });
+
+    // Create notifications
+    try {
+      await Promise.all([
+        this.notificationHelperService.createNotification({
+          userId: data.buyerId,
+          type: 'ORDER',
+          title: 'Recurring Order Created',
+          message: `Recurring order created with ${data.farmerId}`,
+          priority: 'LOW',
+          entityType: 'RECURRING_ORDER',
+          entityId: recurringOrder.id,
+          actionUrl: `/recurring-orders/${recurringOrder.id}`,
+          actionLabel: 'View Order',
+          metadata: { frequency: data.frequency },
+        }),
+        this.notificationHelperService.createNotification({
+          userId: data.farmerId,
+          type: 'ORDER',
+          title: 'Recurring Order Created',
+          message: `A recurring order has been created with you`,
+          priority: 'MEDIUM',
+          entityType: 'RECURRING_ORDER',
+          entityId: recurringOrder.id,
+          actionUrl: `/recurring-orders/${recurringOrder.id}`,
+          actionLabel: 'View Order',
+          metadata: { frequency: data.frequency },
+        }),
+      ]);
+    } catch (error) {
+      console.error('Failed to create notifications for recurring order:', error);
+    }
+
+    // Create activity logs
+    try {
+      await Promise.all([
+        this.activityLogService.createActivityLog({
+          userId: data.buyerId,
+          action: 'RECURRING_ORDER_CREATED',
+          entityType: 'RECURRING_ORDER',
+          entityId: recurringOrder.id,
+          metadata: { frequency: data.frequency, farmerId: data.farmerId },
+        }),
+        this.activityLogService.createActivityLog({
+          userId: data.farmerId,
+          action: 'RECURRING_ORDER_RECEIVED',
+          entityType: 'RECURRING_ORDER',
+          entityId: recurringOrder.id,
+          metadata: { frequency: data.frequency, buyerId: data.buyerId },
+        }),
+      ]);
+    } catch (error) {
+      console.error('Failed to create activity logs for recurring order:', error);
+    }
+
+    return recurringOrder;
+  }
+
+  async updateRecurringOrder(id: string, data: {
+    quantity?: number;
+    pricePerKg?: number;
+    frequency?: string;
+    nextDeliveryDate?: string;
+    status?: string;
+  }, userId: string) {
+    const order = await this.getRecurringOrderById(id);
+
+    // Verify user owns the order (buyer or farmer)
+    if (order.buyerId !== userId && order.farmerId !== userId) {
+      throw new BadRequestException('You can only update your own recurring orders');
+    }
+
+    const updateData: any = {};
+    if (data.quantity !== undefined) updateData.quantity = data.quantity;
+    if (data.pricePerKg !== undefined) updateData.pricePerKg = data.pricePerKg;
+    if (data.frequency) updateData.frequency = data.frequency as any;
+    if (data.nextDeliveryDate) updateData.nextDeliveryDate = new Date(data.nextDeliveryDate);
+    if (data.status) {
+      updateData.status = data.status;
+      updateData.isActive = data.status === 'active';
+    }
+
+    const updatedOrder = await this.prisma.recurringOrder.update({
+      where: { id },
+      data: updateData,
+      include: {
+        buyer: {
+          include: {
+            profile: true,
+          },
+        },
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    // Create activity logs
+    try {
+      await this.activityLogService.createActivityLog({
+        userId,
+        action: 'RECURRING_ORDER_UPDATED',
+        entityType: 'RECURRING_ORDER',
+        entityId: id,
+        metadata: { updates: data },
+      });
+    } catch (error) {
+      console.error('Failed to create activity log for recurring order update:', error);
+    }
+
+    return updatedOrder;
+  }
+
+  async deleteRecurringOrder(id: string, userId: string) {
+    const order = await this.getRecurringOrderById(id);
+
+    // Verify user owns the order (buyer or farmer)
+    if (order.buyerId !== userId && order.farmerId !== userId) {
+      throw new BadRequestException('You can only delete your own recurring orders');
+    }
+
+    await this.prisma.recurringOrder.delete({
+      where: { id },
+    });
+
+    // Create activity logs
+    try {
+      await this.activityLogService.createActivityLog({
+        userId,
+        action: 'RECURRING_ORDER_DELETED',
+        entityType: 'RECURRING_ORDER',
+        entityId: id,
+        metadata: {},
+      });
+    } catch (error) {
+      console.error('Failed to create activity log for recurring order deletion:', error);
+    }
+
+    return { message: 'Recurring order deleted successfully' };
+  }
+
   // ============ Statistics ============
 
   async getMarketplaceStats() {
-    const [totalListings, totalOrders, totalRFQs, totalSourcingRequests] = await Promise.all([
+    const [totalListings, totalOrders, totalRFQs, totalSourcingRequests, totalRecurringOrders] = await Promise.all([
       this.prisma.produceListing.count(),
       this.prisma.marketplaceOrder.count(),
       this.prisma.rFQ.count(),
       this.prisma.sourcingRequest.count(),
+      this.prisma.recurringOrder.count({ where: { isActive: true } }),
     ]);
 
     const ordersByStatus = await this.prisma.marketplaceOrder.groupBy({
@@ -1855,6 +2676,7 @@ export class MarketplaceService {
       totalOrders,
       totalRFQs,
       totalSourcingRequests,
+      totalRecurringOrders,
       ordersByStatus: ordersByStatus.map((item) => ({
         status: item.status,
         count: item._count,

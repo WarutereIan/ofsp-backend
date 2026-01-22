@@ -18,12 +18,15 @@ export const mockPrismaService = {
     create: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
+    count: jest.fn(),
   },
   rating: {
     findMany: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
+    aggregate: jest.fn(),
+    count: jest.fn(),
   },
   produceListing: {
     findUnique: jest.fn(),
@@ -31,6 +34,7 @@ export const mockPrismaService = {
     create: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
+    count: jest.fn(),
   },
   marketplaceOrder: {
     findUnique: jest.fn(),
@@ -38,6 +42,9 @@ export const mockPrismaService = {
     create: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
+    count: jest.fn(),
+    aggregate: jest.fn(),
+    groupBy: jest.fn(),
   },
   rFQ: {
     findUnique: jest.fn(),
@@ -57,6 +64,7 @@ export const mockPrismaService = {
     findMany: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    count: jest.fn(),
   },
   supplierOffer: {
     findUnique: jest.fn(),
@@ -75,6 +83,64 @@ export const mockPrismaService = {
     findMany: jest.fn(),
   },
   $queryRaw: jest.fn(),
+  $queryRawUnsafe: jest.fn(),
+  $executeRawUnsafe: jest.fn(),
+  inventoryItem: {
+    findMany: jest.fn(),
+    aggregate: jest.fn(),
+    groupBy: jest.fn(),
+    count: jest.fn(),
+  },
+  qualityCheck: {
+    findMany: jest.fn(),
+    count: jest.fn(),
+    aggregate: jest.fn(),
+  },
+  aggregationCenter: {
+    findMany: jest.fn(),
+    findUnique: jest.fn(),
+    count: jest.fn(),
+  },
+  stockTransaction: {
+    findMany: jest.fn(),
+    aggregate: jest.fn(),
+    groupBy: jest.fn(),
+    count: jest.fn(),
+  },
+  advisory: {
+    findMany: jest.fn(),
+    count: jest.fn(),
+    aggregate: jest.fn(),
+  },
+  input: {
+    findMany: jest.fn(),
+    findUnique: jest.fn(),
+    aggregate: jest.fn(),
+    count: jest.fn(),
+  },
+  inputOrder: {
+    findMany: jest.fn(),
+    aggregate: jest.fn(),
+    count: jest.fn(),
+  },
+  transportRequest: {
+    findMany: jest.fn(),
+    aggregate: jest.fn(),
+    groupBy: jest.fn(),
+    count: jest.fn(),
+  },
+  dailyOrderSummary: {
+    findMany: jest.fn(),
+  },
+  monthlyFarmerStatistics: {
+    findMany: jest.fn(),
+  },
+  centerUtilizationSummary: {
+    findMany: jest.fn(),
+  },
+  weeklyBuyerSourcing: {
+    findMany: jest.fn(),
+  },
 } as unknown as jest.Mocked<PrismaService>;
 
 export const mockUser = {

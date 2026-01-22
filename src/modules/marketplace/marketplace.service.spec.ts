@@ -14,6 +14,7 @@ import {
   mockSupplierOffer,
   mockNegotiation,
   mockNegotiationMessage,
+  mockUser,
 } from '../../test/test-utils';
 
 describe('MarketplaceService', () => {
@@ -689,19 +690,70 @@ describe('MarketplaceService', () => {
     });
   });
 
+  // ============ RFQ Tests ============
+
   describe('getRFQs', () => {
-    it('should return all RFQs', async () => {
+    it('should return all RFQs without filters', async () => {
       prisma.rFQ.findMany = jest.fn().mockResolvedValue([mockRFQ]);
 
       const result = await service.getRFQs();
 
       expect(result).toEqual([mockRFQ]);
+      expect(prisma.rFQ.findMany).toHaveBeenCalled();
+    });
+
+    it('should filter RFQs by buyerId', async () => {
+      prisma.rFQ.findMany = jest.fn().mockResolvedValue([mockRFQ]);
+
+      const result = await service.getRFQs({ buyerId: 'user-2' });
+
+      expect(result).toEqual([mockRFQ]);
+      expect(prisma.rFQ.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ buyerId: 'user-2' }),
+        }),
+      );
+    });
+
+    it('should filter RFQs by status', async () => {
+      prisma.rFQ.findMany = jest.fn().mockResolvedValue([mockRFQ]);
+
+      const result = await service.getRFQs({ status: 'PUBLISHED' });
+
+      expect(result).toEqual([mockRFQ]);
+      expect(prisma.rFQ.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ status: 'PUBLISHED' }),
+        }),
+      );
     });
   });
 
-  describe('createRFQ', () => {
-    it('should create an RFQ successfully', async () => {
+  describe('getRFQById', () => {
+    it('should return RFQ by ID', async () => {
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(mockRFQ);
+
+      const result = await service.getRFQById('rfq-1');
+
+      expect(result).toEqual(mockRFQ);
+      expect(prisma.rFQ.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'rfq-1' } }),
+      );
+    });
+
+    it('should throw NotFoundException when RFQ not found', async () => {
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(null);
+
+      await expect(service.getRFQById('non-existent')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('createRFQ - Lifecycle Stage 1: RFQ Created (draft)', () => {
+    it('should create an RFQ successfully with status DRAFT', async () => {
       const rfqData = {
+        productType: 'FRESH_ROOTS',
         variety: 'Kenya',
         quantity: 100,
         qualityGrade: 'A',
@@ -711,20 +763,183 @@ describe('MarketplaceService', () => {
         quoteDeadline: '2025-01-25',
       };
 
+      const createdRFQ = {
+        ...mockRFQ,
+        status: 'DRAFT',
+        title: 'RFQ for Kenya - 100kg',
+      };
+
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_rfq_number: 'RFQ-20250121-000001' }]);
+      prisma.rFQ.create = jest.fn().mockResolvedValue(createdRFQ);
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.createRFQ(rfqData, 'user-2');
+
+      expect(result).toEqual(createdRFQ);
+      expect(prisma.rFQ.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'DRAFT',
+            buyerId: 'user-2',
+          }),
+        }),
+      );
+      expect(notificationHelperService.createNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-2',
+          title: 'RFQ Draft Saved',
+          entityType: 'RFQ',
+        }),
+      );
+      expect(activityLogService.createActivityLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-2',
+          action: 'RFQ_CREATED',
+          entityType: 'RFQ',
+        }),
+      );
+    });
+
+    it('should auto-generate title if not provided', async () => {
+      const rfqData = {
+        productType: 'FRESH_ROOTS',
+        variety: 'Kenya',
+        quantity: 100,
+        qualityGrade: 'A',
+        deliveryDate: '2025-02-01',
+      };
+
       prisma.$queryRaw = jest
         .fn()
         .mockResolvedValue([{ generate_rfq_number: 'RFQ-20250121-000001' }]);
       prisma.rFQ.create = jest.fn().mockResolvedValue(mockRFQ);
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
 
-      const result = await service.createRFQ(rfqData, 'user-2');
+      await service.createRFQ(rfqData, 'user-2');
 
-      expect(result).toEqual(mockRFQ);
-      expect(prisma.rFQ.create).toHaveBeenCalled();
+      expect(prisma.rFQ.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            title: 'RFQ for Kenya - 100kg',
+          }),
+        }),
+      );
+    });
+
+    it('should default unit to kg if not provided', async () => {
+      const rfqData = {
+        productType: 'FRESH_ROOTS',
+        variety: 'Kenya',
+        quantity: 100,
+        qualityGrade: 'A',
+        deliveryDate: '2025-02-01',
+      };
+
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_rfq_number: 'RFQ-20250121-000001' }]);
+      prisma.rFQ.create = jest.fn().mockResolvedValue(mockRFQ);
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      await service.createRFQ(rfqData, 'user-2');
+
+      expect(prisma.rFQ.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            unit: 'kg',
+          }),
+        }),
+      );
     });
   });
 
-  describe('submitRFQResponse', () => {
-    it('should submit RFQ response successfully', async () => {
+  describe('updateRFQ', () => {
+    it('should update RFQ successfully', async () => {
+      const updateData = {
+        quantity: 200,
+        deliveryLocation: 'Mombasa',
+      };
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(mockRFQ);
+      prisma.rFQ.update = jest.fn().mockResolvedValue({
+        ...mockRFQ,
+        ...updateData,
+      });
+
+      const result = await service.updateRFQ('rfq-1', updateData, 'user-2');
+
+      expect(result).toEqual(expect.objectContaining(updateData));
+      expect(prisma.rFQ.update).toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when buyer does not own RFQ', async () => {
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(mockRFQ);
+
+      await expect(
+        service.updateRFQ('rfq-1', { quantity: 200 }, 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('publishRFQ - Lifecycle Stage 2: RFQ Published', () => {
+    it('should publish RFQ and update status to PUBLISHED', async () => {
+      const draftRFQ = { ...mockRFQ, status: 'DRAFT' };
+      const publishedRFQ = { ...mockRFQ, status: 'PUBLISHED', publishedAt: new Date() };
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(draftRFQ);
+      prisma.rFQ.update = jest.fn().mockResolvedValue(publishedRFQ);
+      prisma.user.findMany = jest.fn().mockResolvedValue([
+        { id: 'farmer-1' },
+        { id: 'farmer-2' },
+      ]);
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.publishRFQ('rfq-1', 'user-2');
+
+      expect(result.status).toBe('PUBLISHED');
+      expect(prisma.rFQ.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'rfq-1' },
+          data: expect.objectContaining({
+            status: 'PUBLISHED',
+          }),
+        }),
+      );
+      expect(notificationHelperService.createNotification).toHaveBeenCalledTimes(3); // buyer + 2 farmers
+      expect(activityLogService.createActivityLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'RFQ_PUBLISHED',
+        }),
+      );
+    });
+
+    it('should throw BadRequestException when RFQ is not in DRAFT status', async () => {
+      const publishedRFQ = { ...mockRFQ, status: 'PUBLISHED' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(publishedRFQ);
+
+      await expect(service.publishRFQ('rfq-1', 'user-2')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw BadRequestException when buyer does not own RFQ', async () => {
+      const draftRFQ = { ...mockRFQ, status: 'DRAFT' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(draftRFQ);
+
+      await expect(service.publishRFQ('rfq-1', 'user-1')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('submitRFQResponse - Lifecycle Stage 3: RFQ Response Submitted', () => {
+    it('should submit RFQ response successfully with status SUBMITTED', async () => {
       const responseData = {
         rfqId: 'rfq-1',
         pricePerKg: 50,
@@ -733,45 +948,628 @@ describe('MarketplaceService', () => {
       };
 
       const futureDate = new Date();
-      futureDate.setDate(futureDate.getDate() + 30); // 30 days in the future
+      futureDate.setDate(futureDate.getDate() + 30);
+      const publishedRFQ = {
+        ...mockRFQ,
+        status: 'PUBLISHED',
+        quoteDeadline: futureDate,
+        totalResponses: 0,
+      };
 
-      prisma.rFQ.findUnique = jest
-        .fn()
-        .mockResolvedValue({ ...mockRFQ, quoteDeadline: futureDate });
-      prisma.rFQResponse.create = jest.fn().mockResolvedValue(mockRFQResponse);
+      const submittedResponse = {
+        ...mockRFQResponse,
+        status: 'SUBMITTED',
+        submittedAt: new Date(),
+      };
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(publishedRFQ);
+      prisma.rFQResponse.create = jest.fn().mockResolvedValue(submittedResponse);
+      prisma.rFQ.update = jest.fn().mockResolvedValue({
+        ...publishedRFQ,
+        totalResponses: 1,
+      });
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
 
       const result = await service.submitRFQResponse(responseData, 'user-1');
 
-      expect(result).toEqual(mockRFQResponse);
-      expect(prisma.rFQResponse.create).toHaveBeenCalled();
+      expect(result.status).toBe('SUBMITTED');
+      expect(prisma.rFQResponse.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'SUBMITTED',
+            supplierId: 'user-1',
+          }),
+        }),
+      );
+      expect(prisma.rFQ.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            totalResponses: { increment: 1 },
+          }),
+        }),
+      );
+      expect(notificationHelperService.createNotification).toHaveBeenCalledTimes(2); // buyer + supplier
+      expect(activityLogService.createActivityLog).toHaveBeenCalledTimes(2);
+    });
+
+    it('should throw BadRequestException when RFQ is not PUBLISHED', async () => {
+      const draftRFQ = { ...mockRFQ, status: 'DRAFT' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(draftRFQ);
+
+      await expect(
+        service.submitRFQResponse({ rfqId: 'rfq-1', pricePerKg: 50 }, 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when quote deadline has passed', async () => {
+      const pastDate = new Date();
+      pastDate.setDate(pastDate.getDate() - 1);
+      const publishedRFQ = {
+        ...mockRFQ,
+        status: 'PUBLISHED',
+        quoteDeadline: pastDate,
+      };
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(publishedRFQ);
+
+      await expect(
+        service.submitRFQResponse({ rfqId: 'rfq-1', pricePerKg: 50 }, 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when RFQ ID is missing', async () => {
+      await expect(
+        service.submitRFQResponse({ pricePerKg: 50 } as any, 'user-1'),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
-  describe('awardRFQ', () => {
-    it('should award RFQ to a response', async () => {
-      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(mockRFQ);
-      prisma.rFQResponse.update = jest.fn().mockResolvedValue({
+  describe('updateRFQResponseStatus - Lifecycle Stages 4 & 5: Under Review & Shortlisted', () => {
+    it('should update response status to UNDER_REVIEW', async () => {
+      const response = {
         ...mockRFQResponse,
-        status: 'AWARDED',
-      });
-      prisma.rFQ.update = jest.fn().mockResolvedValue({
-        ...mockRFQ,
-        status: 'AWARDED',
-      });
+        rfqId: 'rfq-1',
+        status: 'SUBMITTED',
+      };
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
 
-      const result = await service.awardRFQ('rfq-1', 'rfq-response-1', 'user-2');
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(response);
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+      prisma.rFQResponse.update = jest.fn().mockResolvedValue({
+        ...response,
+        status: 'UNDER_REVIEW',
+        evaluatedAt: new Date(),
+      });
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
 
-      expect(result.status).toBe('AWARDED');
-      expect(prisma.rFQResponse.update).toHaveBeenCalled();
-      expect(prisma.rFQ.update).toHaveBeenCalled();
+      const result = await service.updateRFQResponseStatus(
+        'response-1',
+        'UNDER_REVIEW',
+        'user-2',
+      );
+
+      expect(result.status).toBe('UNDER_REVIEW');
+      expect(prisma.rFQResponse.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'UNDER_REVIEW',
+          }),
+        }),
+      );
+    });
+
+    it('should update response status to SHORTLISTED and send notifications', async () => {
+      const response = {
+        ...mockRFQResponse,
+        rfqId: 'rfq-1',
+        supplierId: 'user-1',
+        status: 'SUBMITTED',
+      };
+      const rfq = { ...mockRFQ, buyerId: 'user-2', rfqNumber: 'RFQ-001' };
+
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(response);
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+      prisma.rFQResponse.update = jest.fn().mockResolvedValue({
+        ...response,
+        status: 'SHORTLISTED',
+        evaluatedAt: new Date(),
+        supplier: {
+          ...mockUser,
+          profile: { firstName: 'John' },
+        },
+      });
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.updateRFQResponseStatus(
+        'response-1',
+        'SHORTLISTED',
+        'user-2',
+      );
+
+      expect(result.status).toBe('SHORTLISTED');
+      expect(notificationHelperService.createNotification).toHaveBeenCalledTimes(2); // supplier + buyer
+      expect(notificationHelperService.createNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-1',
+          title: 'Quote Shortlisted',
+        }),
+      );
+    });
+
+    it('should update response status to REJECTED and send notification', async () => {
+      const response = {
+        ...mockRFQResponse,
+        rfqId: 'rfq-1',
+        supplierId: 'user-1',
+        status: 'SUBMITTED',
+      };
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(response);
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+      prisma.rFQResponse.update = jest.fn().mockResolvedValue({
+        ...response,
+        status: 'REJECTED',
+        evaluatedAt: new Date(),
+      });
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.updateRFQResponseStatus(
+        'response-1',
+        'REJECTED',
+        'user-2',
+      );
+
+      expect(result.status).toBe('REJECTED');
+      expect(notificationHelperService.createNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-1',
+          title: 'Quote Rejected',
+        }),
+      );
+    });
+
+    it('should throw BadRequestException for invalid status', async () => {
+      const response = { ...mockRFQResponse, rfqId: 'rfq-1' };
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(response);
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+
+      await expect(
+        service.updateRFQResponseStatus('response-1', 'INVALID_STATUS', 'user-2'),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should throw BadRequestException when buyer does not own RFQ', async () => {
-      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(mockRFQ);
+      const response = { ...mockRFQResponse, rfqId: 'rfq-1' };
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(response);
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
 
       await expect(
-        service.awardRFQ('rfq-1', 'rfq-response-1', 'user-1'),
+        service.updateRFQResponseStatus('response-1', 'SHORTLISTED', 'user-1'),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('awardRFQ - Lifecycle Stage 6: RFQ Response Awarded', () => {
+    it('should award RFQ to a response and update both RFQ and response status', async () => {
+      const rfq = { ...mockRFQ, buyerId: 'user-2', rfqNumber: 'RFQ-001' };
+      const response = {
+        ...mockRFQResponse,
+        rfqId: 'rfq-1',
+        supplierId: 'user-1',
+        status: 'SUBMITTED',
+        supplier: {
+          ...mockUser,
+          profile: { firstName: 'John' },
+        },
+      };
+      const allResponses = [
+        { id: 'response-1', supplierId: 'user-1', status: 'SUBMITTED' },
+        { id: 'response-2', supplierId: 'user-3', status: 'SUBMITTED' },
+      ];
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(response);
+      prisma.rFQResponse.findMany = jest.fn().mockResolvedValue(allResponses);
+      prisma.rFQResponse.update = jest.fn().mockResolvedValue({
+        ...response,
+        status: 'AWARDED',
+        awardedAt: new Date(),
+      });
+      prisma.rFQ.update = jest.fn().mockResolvedValue({
+        ...rfq,
+        status: 'AWARDED',
+        awardedAt: new Date(),
+      });
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.awardRFQ('rfq-1', 'response-1', 'user-2');
+
+      expect(result.status).toBe('AWARDED');
+      expect(prisma.rFQResponse.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'AWARDED',
+          }),
+        }),
+      );
+      expect(prisma.rFQ.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'AWARDED',
+          }),
+        }),
+      );
+      expect(notificationHelperService.createNotification).toHaveBeenCalledTimes(3); // buyer + awarded supplier + other supplier
+      expect(activityLogService.createActivityLog).toHaveBeenCalledTimes(2);
+    });
+
+    it('should throw BadRequestException when response does not belong to RFQ', async () => {
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+      const response = { ...mockRFQResponse, rfqId: 'different-rfq' };
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(response);
+
+      await expect(
+        service.awardRFQ('rfq-1', 'response-1', 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when buyer does not own RFQ', async () => {
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+
+      await expect(
+        service.awardRFQ('rfq-1', 'response-1', 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('convertRFQResponseToOrder - Lifecycle Stage 7: Convert to Order', () => {
+    it('should convert awarded RFQ response to marketplace order', async () => {
+      const rfq = {
+        ...mockRFQ,
+        buyerId: 'user-2',
+        variety: 'KENYA',
+        rfqNumber: 'RFQ-001',
+      };
+      const awardedResponse = {
+        ...mockRFQResponse,
+        rfqId: 'rfq-1',
+        supplierId: 'user-1',
+        status: 'AWARDED',
+        quantity: 100,
+        pricePerUnit: 50,
+        totalAmount: 5000,
+        supplier: {
+          ...mockUser,
+          profile: { firstName: 'John' },
+        },
+      };
+      const createdOrder = {
+        ...mockOrder,
+        id: 'order-new',
+        rfqId: 'rfq-1',
+        rfqResponseId: 'response-1',
+      };
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(awardedResponse);
+      prisma.user.findUnique = jest
+        .fn()
+        .mockResolvedValueOnce(mockBuyer)
+        .mockResolvedValueOnce(mockFarmer);
+      prisma.$queryRaw = jest
+        .fn()
+        .mockResolvedValue([{ generate_order_number: 'ORD-001' }]);
+      prisma.marketplaceOrder.create = jest.fn().mockResolvedValue(createdOrder);
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.convertRFQResponseToOrder(
+        'rfq-1',
+        'response-1',
+        'user-2',
+        '123 Main St',
+        'Nairobi',
+      );
+
+      expect(result.rfqId).toBe('rfq-1');
+      expect(result.rfqResponseId).toBe('response-1');
+      expect(prisma.marketplaceOrder.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            buyerId: 'user-2',
+            farmerId: 'user-1',
+            quantity: 100,
+            pricePerKg: 50,
+            status: 'ORDER_PLACED',
+          }),
+        }),
+      );
+      expect(notificationHelperService.createNotification).toHaveBeenCalledTimes(2);
+      expect(activityLogService.createActivityLog).toHaveBeenCalledTimes(2);
+    });
+
+    it('should throw BadRequestException when response is not AWARDED', async () => {
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+      const submittedResponse = {
+        ...mockRFQResponse,
+        rfqId: 'rfq-1',
+        status: 'SUBMITTED',
+      };
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(submittedResponse);
+
+      await expect(
+        service.convertRFQResponseToOrder('rfq-1', 'response-1', 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when buyer does not own RFQ', async () => {
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+
+      await expect(
+        service.convertRFQResponseToOrder('rfq-1', 'response-1', 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('closeRFQ - Lifecycle Stage 8: RFQ Closed', () => {
+    it('should close RFQ and send notifications to buyer and all suppliers', async () => {
+      const rfq = {
+        ...mockRFQ,
+        buyerId: 'user-2',
+        status: 'PUBLISHED',
+        rfqNumber: 'RFQ-001',
+      };
+      const responses = [
+        { supplierId: 'user-1' },
+        { supplierId: 'user-3' },
+      ];
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+      prisma.rFQ.update = jest.fn().mockResolvedValue({
+        ...rfq,
+        status: 'CLOSED',
+        closedAt: new Date(),
+      });
+      prisma.rFQResponse.findMany = jest.fn().mockResolvedValue(responses);
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.closeRFQ('rfq-1', 'user-2');
+
+      expect(result.status).toBe('CLOSED');
+      expect(prisma.rFQ.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'CLOSED',
+          }),
+        }),
+      );
+      expect(notificationHelperService.createNotification).toHaveBeenCalledTimes(3); // buyer + 2 suppliers
+      expect(activityLogService.createActivityLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'RFQ_CLOSED',
+        }),
+      );
+    });
+
+    it('should throw BadRequestException when RFQ is already closed', async () => {
+      const closedRFQ = { ...mockRFQ, status: 'CLOSED' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(closedRFQ);
+
+      await expect(service.closeRFQ('rfq-1', 'user-2')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw BadRequestException when buyer does not own RFQ', async () => {
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+
+      await expect(service.closeRFQ('rfq-1', 'user-1')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('cancelRFQ - Lifecycle Stage 9: RFQ Cancelled', () => {
+    it('should cancel RFQ and mark all responses as withdrawn', async () => {
+      const rfq = {
+        ...mockRFQ,
+        buyerId: 'user-2',
+        status: 'PUBLISHED',
+        rfqNumber: 'RFQ-001',
+      };
+      const responses = [
+        { supplierId: 'user-1' },
+        { supplierId: 'user-3' },
+      ];
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+      prisma.rFQ.update = jest.fn().mockResolvedValue({
+        ...rfq,
+        status: 'CANCELLED',
+        closedAt: new Date(),
+      });
+      prisma.rFQResponse.updateMany = jest.fn().mockResolvedValue({ count: 2 });
+      prisma.rFQResponse.findMany = jest.fn().mockResolvedValue(responses);
+      notificationHelperService.createNotification = jest.fn().mockResolvedValue({});
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.cancelRFQ('rfq-1', 'user-2', 'Changed requirements');
+
+      expect(result.status).toBe('CANCELLED');
+      expect(prisma.rFQResponse.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { status: 'WITHDRAWN' },
+        }),
+      );
+      expect(notificationHelperService.createNotification).toHaveBeenCalledTimes(3); // buyer + 2 suppliers
+      expect(activityLogService.createActivityLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'RFQ_CANCELLED',
+          metadata: expect.objectContaining({ reason: 'Changed requirements' }),
+        }),
+      );
+    });
+
+    it('should throw BadRequestException when RFQ is already cancelled', async () => {
+      const cancelledRFQ = { ...mockRFQ, status: 'CANCELLED' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(cancelledRFQ);
+
+      await expect(service.cancelRFQ('rfq-1', 'user-2')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw BadRequestException when RFQ is already awarded', async () => {
+      const awardedRFQ = { ...mockRFQ, status: 'AWARDED' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(awardedRFQ);
+
+      await expect(service.cancelRFQ('rfq-1', 'user-2')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw BadRequestException when buyer does not own RFQ', async () => {
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+
+      await expect(service.cancelRFQ('rfq-1', 'user-1')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('setRFQEvaluating - Lifecycle: RFQ Evaluating Status', () => {
+    it('should set RFQ status to EVALUATING', async () => {
+      const publishedRFQ = { ...mockRFQ, buyerId: 'user-2', status: 'PUBLISHED' };
+
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(publishedRFQ);
+      prisma.rFQ.update = jest.fn().mockResolvedValue({
+        ...publishedRFQ,
+        status: 'EVALUATING',
+      });
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.setRFQEvaluating('rfq-1', 'user-2');
+
+      expect(result.status).toBe('EVALUATING');
+      expect(prisma.rFQ.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'EVALUATING',
+          }),
+        }),
+      );
+      expect(activityLogService.createActivityLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'RFQ_EVALUATING',
+        }),
+      );
+    });
+
+    it('should throw BadRequestException when RFQ is not PUBLISHED', async () => {
+      const draftRFQ = { ...mockRFQ, status: 'DRAFT' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(draftRFQ);
+
+      await expect(service.setRFQEvaluating('rfq-1', 'user-2')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw BadRequestException when buyer does not own RFQ', async () => {
+      const rfq = { ...mockRFQ, buyerId: 'user-2' };
+      prisma.rFQ.findUnique = jest.fn().mockResolvedValue(rfq);
+
+      await expect(service.setRFQEvaluating('rfq-1', 'user-1')).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('getRFQResponses', () => {
+    it('should return all RFQ responses without filters', async () => {
+      prisma.rFQResponse.findMany = jest.fn().mockResolvedValue([mockRFQResponse]);
+
+      const result = await service.getRFQResponses();
+
+      expect(result).toEqual([mockRFQResponse]);
+      expect(prisma.rFQResponse.findMany).toHaveBeenCalled();
+    });
+
+    it('should filter responses by rfqId', async () => {
+      prisma.rFQResponse.findMany = jest.fn().mockResolvedValue([mockRFQResponse]);
+
+      const result = await service.getRFQResponses({ rfqId: 'rfq-1' });
+
+      expect(result).toEqual([mockRFQResponse]);
+      expect(prisma.rFQResponse.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ rfqId: 'rfq-1' }),
+        }),
+      );
+    });
+
+    it('should filter responses by supplierId', async () => {
+      prisma.rFQResponse.findMany = jest.fn().mockResolvedValue([mockRFQResponse]);
+
+      const result = await service.getRFQResponses({ supplierId: 'user-1' });
+
+      expect(result).toEqual([mockRFQResponse]);
+      expect(prisma.rFQResponse.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ supplierId: 'user-1' }),
+        }),
+      );
+    });
+
+    it('should filter responses by status', async () => {
+      prisma.rFQResponse.findMany = jest.fn().mockResolvedValue([mockRFQResponse]);
+
+      const result = await service.getRFQResponses({ status: 'SUBMITTED' });
+
+      expect(result).toEqual([mockRFQResponse]);
+      expect(prisma.rFQResponse.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ status: 'SUBMITTED' }),
+        }),
+      );
+    });
+  });
+
+  describe('getRFQResponseById', () => {
+    it('should return RFQ response by ID', async () => {
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(mockRFQResponse);
+
+      const result = await service.getRFQResponseById('response-1');
+
+      expect(result).toEqual(mockRFQResponse);
+      expect(prisma.rFQResponse.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'response-1' } }),
+      );
+    });
+
+    it('should throw NotFoundException when response not found', async () => {
+      prisma.rFQResponse.findUnique = jest.fn().mockResolvedValue(null);
+
+      await expect(service.getRFQResponseById('non-existent')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -795,6 +1593,215 @@ describe('MarketplaceService', () => {
 
       expect(result).toEqual(mockSourcingRequest);
       expect(prisma.sourcingRequest.create).toHaveBeenCalled();
+    });
+  });
+
+  describe('updateSourcingRequest - Lifecycle: Update Draft Sourcing Request', () => {
+    it('should update sourcing request successfully when status is DRAFT', async () => {
+      const draftRequest = { ...mockSourcingRequest, status: 'DRAFT', buyerId: 'user-2' };
+      const updateData = {
+        quantity: 300,
+        deliveryLocation: 'Mombasa',
+        description: 'Updated requirements',
+      };
+      const updatedRequest = {
+        ...draftRequest,
+        quantity: 300,
+        deliveryLocation: 'Mombasa',
+        additionalRequirements: 'Updated requirements',
+      };
+
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(draftRequest);
+      prisma.sourcingRequest.update = jest.fn().mockResolvedValue(updatedRequest);
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.updateSourcingRequest('sourcing-1', updateData, 'user-2');
+
+      expect(result.quantity).toBe(300);
+      expect(result.deliveryLocation).toBe('Mombasa');
+      expect(prisma.sourcingRequest.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'sourcing-1' },
+          data: expect.objectContaining({
+            quantity: 300,
+            deliveryLocation: 'Mombasa',
+            additionalRequirements: 'Updated requirements',
+          }),
+        }),
+      );
+      expect(activityLogService.createActivityLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-2',
+          action: 'SOURCING_REQUEST_UPDATED',
+          entityType: 'SOURCING_REQUEST',
+          entityId: 'sourcing-1',
+        }),
+      );
+    });
+
+    it('should update all fields when provided', async () => {
+      const draftRequest = { ...mockSourcingRequest, status: 'DRAFT', buyerId: 'user-2' };
+      const updateData = {
+        title: 'Updated Title',
+        productType: 'PROCESS_GRADE',
+        variety: 'SPK004',
+        quantity: 500,
+        unit: 'tons',
+        qualityGrade: 'B',
+        deliveryDate: '2025-03-01',
+        deliveryLocation: 'Kisumu',
+        description: 'New description',
+      };
+      const updatedRequest = {
+        ...draftRequest,
+        ...updateData,
+        deadline: new Date('2025-03-01'),
+        additionalRequirements: 'New description',
+      };
+
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(draftRequest);
+      prisma.sourcingRequest.update = jest.fn().mockResolvedValue(updatedRequest);
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      const result = await service.updateSourcingRequest('sourcing-1', updateData, 'user-2');
+
+      expect(result.title).toBe('Updated Title');
+      expect(result.quantity).toBe(500);
+      expect(prisma.sourcingRequest.update).toHaveBeenCalled();
+      expect(activityLogService.createActivityLog).toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when request is not in DRAFT status', async () => {
+      const openRequest = { ...mockSourcingRequest, status: 'OPEN', buyerId: 'user-2' };
+      const updateData = { quantity: 300 };
+
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(openRequest);
+
+      await expect(
+        service.updateSourcingRequest('sourcing-1', updateData, 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.updateSourcingRequest('sourcing-1', updateData, 'user-2'),
+      ).rejects.toThrow('Only draft sourcing requests can be updated');
+      expect(prisma.sourcingRequest.update).not.toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when request is CLOSED', async () => {
+      const closedRequest = { ...mockSourcingRequest, status: 'CLOSED', buyerId: 'user-2' };
+      const updateData = { quantity: 300 };
+
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(closedRequest);
+
+      await expect(
+        service.updateSourcingRequest('sourcing-1', updateData, 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.updateSourcingRequest('sourcing-1', updateData, 'user-2'),
+      ).rejects.toThrow('Only draft sourcing requests can be updated');
+    });
+
+    it('should throw BadRequestException when request is FULFILLED', async () => {
+      const fulfilledRequest = { ...mockSourcingRequest, status: 'FULFILLED', buyerId: 'user-2' };
+      const updateData = { quantity: 300 };
+
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(fulfilledRequest);
+
+      await expect(
+        service.updateSourcingRequest('sourcing-1', updateData, 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when buyer does not own request', async () => {
+      const draftRequest = { ...mockSourcingRequest, status: 'DRAFT', buyerId: 'user-2' };
+      const updateData = { quantity: 300 };
+
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(draftRequest);
+
+      await expect(
+        service.updateSourcingRequest('sourcing-1', updateData, 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.updateSourcingRequest('sourcing-1', updateData, 'user-1'),
+      ).rejects.toThrow('You can only update your own sourcing requests');
+      expect(prisma.sourcingRequest.update).not.toHaveBeenCalled();
+    });
+
+    it('should throw NotFoundException when request does not exist', async () => {
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(null);
+
+      await expect(
+        service.updateSourcingRequest('non-existent', { quantity: 300 }, 'user-2'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should only update provided fields', async () => {
+      const draftRequest = { ...mockSourcingRequest, status: 'DRAFT', buyerId: 'user-2' };
+      const updateData = { quantity: 300 }; // Only quantity
+      const updatedRequest = { ...draftRequest, quantity: 300 };
+
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(draftRequest);
+      prisma.sourcingRequest.update = jest.fn().mockResolvedValue(updatedRequest);
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      await service.updateSourcingRequest('sourcing-1', updateData, 'user-2');
+
+      expect(prisma.sourcingRequest.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            quantity: 300,
+          }),
+        }),
+      );
+      // Verify other fields are not included
+      const updateCall = prisma.sourcingRequest.update.mock.calls[0][0];
+      expect(updateCall.data.title).toBeUndefined();
+      expect(updateCall.data.deliveryLocation).toBeUndefined();
+    });
+
+    it('should map deliveryDate to deadline field', async () => {
+      const draftRequest = { ...mockSourcingRequest, status: 'DRAFT', buyerId: 'user-2' };
+      const updateData = { deliveryDate: '2025-03-15' };
+      const updatedRequest = {
+        ...draftRequest,
+        deadline: new Date('2025-03-15'),
+      };
+
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(draftRequest);
+      prisma.sourcingRequest.update = jest.fn().mockResolvedValue(updatedRequest);
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      await service.updateSourcingRequest('sourcing-1', updateData, 'user-2');
+
+      expect(prisma.sourcingRequest.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            deadline: new Date('2025-03-15'),
+          }),
+        }),
+      );
+    });
+
+    it('should map description to additionalRequirements field', async () => {
+      const draftRequest = { ...mockSourcingRequest, status: 'DRAFT', buyerId: 'user-2' };
+      const updateData = { description: 'New requirements text' };
+      const updatedRequest = {
+        ...draftRequest,
+        additionalRequirements: 'New requirements text',
+      };
+
+      prisma.sourcingRequest.findUnique = jest.fn().mockResolvedValue(draftRequest);
+      prisma.sourcingRequest.update = jest.fn().mockResolvedValue(updatedRequest);
+      activityLogService.createActivityLog = jest.fn().mockResolvedValue({});
+
+      await service.updateSourcingRequest('sourcing-1', updateData, 'user-2');
+
+      expect(prisma.sourcingRequest.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            additionalRequirements: 'New requirements text',
+          }),
+        }),
+      );
     });
   });
 
@@ -927,6 +1934,9 @@ describe('MarketplaceService', () => {
       prisma.marketplaceOrder.count = jest.fn().mockResolvedValue(5);
       prisma.rFQ.count = jest.fn().mockResolvedValue(3);
       prisma.sourcingRequest.count = jest.fn().mockResolvedValue(2);
+      prisma.recurringOrder = {
+        count: jest.fn().mockResolvedValue(4),
+      } as any;
       prisma.marketplaceOrder.groupBy = jest.fn().mockResolvedValue([
         { status: 'ORDER_PLACED', _count: 2 },
         { status: 'COMPLETED', _count: 3 },
@@ -938,6 +1948,7 @@ describe('MarketplaceService', () => {
       expect(result.totalOrders).toBe(5);
       expect(result.totalRFQs).toBe(3);
       expect(result.totalSourcingRequests).toBe(2);
+      expect(result.totalRecurringOrders).toBe(4);
       expect(result.ordersByStatus).toHaveLength(2);
     });
   });

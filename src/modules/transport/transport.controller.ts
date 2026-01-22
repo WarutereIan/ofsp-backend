@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Delete,
   Body,
   Param,
   Query,
@@ -16,8 +17,10 @@ import {
   CreateTransportRequestDto,
   UpdateTransportRequestStatusDto,
   CreatePickupScheduleDto,
+  UpdatePickupScheduleDto,
   CreatePickupSlotDto,
   BookPickupSlotDto,
+  ConfirmPickupDto,
   AddTrackingUpdateDto,
 } from './dto';
 
@@ -87,6 +90,19 @@ export class TransportController {
     return this.transportService.acceptTransportRequest(id, user.id);
   }
 
+  @Put('requests/:id/reject')
+  @ApiOperation({ summary: 'Reject a transport request' })
+  async rejectTransportRequest(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.transportService.updateTransportRequestStatus(
+      id,
+      { status: 'REJECTED' },
+      user.id,
+    );
+  }
+
   // ============ Pickup Schedules ============
 
   @Get('pickup-schedules')
@@ -125,6 +141,39 @@ export class TransportController {
     );
   }
 
+  @Put('pickup-schedules/:id')
+  @ApiOperation({ summary: 'Update a pickup schedule (only DRAFT status)' })
+  async updatePickupSchedule(
+    @Param('id') id: string,
+    @Body() updatePickupScheduleDto: UpdatePickupScheduleDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.transportService.updatePickupSchedule(
+      id,
+      updatePickupScheduleDto,
+      user.id,
+    );
+  }
+
+  @Put('pickup-schedules/:id/publish')
+  @ApiOperation({ summary: 'Publish a pickup schedule' })
+  async publishPickupSchedule(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.transportService.publishPickupSchedule(id, user.id);
+  }
+
+  @Put('pickup-schedules/:id/cancel')
+  @ApiOperation({ summary: 'Cancel a pickup schedule' })
+  async cancelPickupSchedule(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Body('reason') reason?: string,
+  ) {
+    return this.transportService.cancelPickupSchedule(id, user.id, reason);
+  }
+
   // ============ Pickup Slots ============
 
   @Get('pickup-slots')
@@ -159,6 +208,38 @@ export class TransportController {
     return this.transportService.bookPickupSlot(id, bookPickupSlotDto, user.id);
   }
 
+  @Delete('pickup-slots/bookings/:id')
+  @ApiOperation({ summary: 'Cancel a pickup slot booking' })
+  async cancelPickupSlotBooking(
+    @Param('id') bookingId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.transportService.cancelPickupSlotBooking(bookingId, user.id);
+  }
+
+  @Post('pickup-slots/bookings/:id/confirm')
+  @ApiOperation({ summary: 'Confirm pickup and create batch' })
+  async confirmPickup(
+    @Param('id') bookingId: string,
+    @Body() confirmPickupDto: ConfirmPickupDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.transportService.confirmPickup(bookingId, confirmPickupDto, user.id);
+  }
+
+  @Get('pickup-slots/bookings')
+  @ApiOperation({ summary: "Get farmer's pickup bookings" })
+  async getFarmerPickupBookings(
+    @Query('farmerId') farmerId: string,
+    @Query('status') status?: string,
+    @Query('scheduleId') scheduleId?: string,
+  ) {
+    return this.transportService.getFarmerPickupBookings(farmerId, {
+      status,
+      scheduleId,
+    });
+  }
+
   // ============ Tracking ============
 
   @Get('tracking/:requestId')
@@ -182,6 +263,30 @@ export class TransportController {
   }
 
   // ============ Statistics ============
+
+  @Get('deliveries')
+  @ApiOperation({ summary: 'Get active deliveries' })
+  async getActiveDeliveries(
+    @Query('providerId') providerId?: string,
+    @Query('requesterId') requesterId?: string,
+  ) {
+    return this.transportService.getActiveDeliveries({
+      providerId,
+      requesterId,
+    });
+  }
+
+  @Get('receipts/:id')
+  @ApiOperation({ summary: 'Get pickup receipt by ID' })
+  async getPickupReceiptById(@Param('id') id: string) {
+    return this.transportService.getPickupReceiptById(id);
+  }
+
+  @Get('receipts')
+  @ApiOperation({ summary: 'Get pickup receipt by booking ID' })
+  async getPickupReceiptByBookingId(@Query('bookingId') bookingId: string) {
+    return this.transportService.getPickupReceiptByBookingId(bookingId);
+  }
 
   @Get('stats')
   @ApiOperation({ summary: 'Get transport statistics' })

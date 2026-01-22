@@ -20,10 +20,15 @@ import {
   UpdateOrderStatusDto,
   CreateRFQDto,
   CreateRFQResponseDto,
+  CancelRFQDto,
+  ConvertRFQResponseToOrderDto,
   CreateSourcingRequestDto,
+  UpdateSourcingRequestDto,
   CreateSupplierOfferDto,
   CreateNegotiationDto,
   SendNegotiationMessageDto,
+  CreateRecurringOrderDto,
+  UpdateRecurringOrderDto,
 } from './dto';
 
 @ApiTags('Marketplace')
@@ -181,6 +186,22 @@ export class MarketplaceController {
     return this.marketplaceService.closeRFQ(id, user.id);
   }
 
+  @Put('rfqs/:id/cancel')
+  @ApiOperation({ summary: 'Cancel an RFQ' })
+  async cancelRFQ(
+    @Param('id') id: string,
+    @Body('reason') reason: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.cancelRFQ(id, user.id, reason);
+  }
+
+  @Put('rfqs/:id/evaluating')
+  @ApiOperation({ summary: 'Set RFQ to evaluating status' })
+  async setRFQEvaluating(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.marketplaceService.setRFQEvaluating(id, user.id);
+  }
+
   // ============ RFQ Responses ============
 
   @Get('rfqs/:rfqId/responses')
@@ -232,6 +253,23 @@ export class MarketplaceController {
     return this.marketplaceService.awardRFQ(rfqId, responseId, user.id);
   }
 
+  @Post('rfqs/:rfqId/responses/:responseId/convert-to-order')
+  @ApiOperation({ summary: 'Convert awarded RFQ response to marketplace order' })
+  async convertRFQResponseToOrder(
+    @Param('rfqId') rfqId: string,
+    @Param('responseId') responseId: string,
+    @Body() convertDto: ConvertRFQResponseToOrderDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.convertRFQResponseToOrder(
+      rfqId,
+      responseId,
+      user.id,
+      convertDto.deliveryAddress,
+      convertDto.deliveryCounty,
+    );
+  }
+
   // ============ Sourcing Requests ============
 
   @Get('sourcing-requests')
@@ -257,6 +295,20 @@ export class MarketplaceController {
   ) {
     return this.marketplaceService.createSourcingRequest(
       createSourcingRequestDto,
+      user.id,
+    );
+  }
+
+  @Put('sourcing-requests/:id')
+  @ApiOperation({ summary: 'Update a sourcing request (only DRAFT status)' })
+  async updateSourcingRequest(
+    @Param('id') id: string,
+    @Body() updateSourcingRequestDto: UpdateSourcingRequestDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.updateSourcingRequest(
+      id,
+      updateSourcingRequestDto,
       user.id,
     );
   }
@@ -355,6 +407,56 @@ export class MarketplaceController {
   @ApiOperation({ summary: 'Reject negotiation' })
   async rejectNegotiation(@Param('id') id: string, @CurrentUser() user: any) {
     return this.marketplaceService.rejectNegotiation(id, user.id);
+  }
+
+  // ============ Recurring Orders ============
+
+  @Get('recurring-orders')
+  @ApiOperation({ summary: 'Get all recurring orders' })
+  async getRecurringOrders(
+    @Query('buyerId') buyerId?: string,
+    @Query('farmerId') farmerId?: string,
+    @Query('isActive') isActive?: boolean,
+  ) {
+    return this.marketplaceService.getRecurringOrders({
+      buyerId,
+      farmerId,
+      isActive: isActive === undefined ? undefined : isActive === true,
+    });
+  }
+
+  @Get('recurring-orders/:id')
+  @ApiOperation({ summary: 'Get recurring order by ID' })
+  async getRecurringOrderById(@Param('id') id: string) {
+    return this.marketplaceService.getRecurringOrderById(id);
+  }
+
+  @Post('recurring-orders')
+  @ApiOperation({ summary: 'Create a recurring order' })
+  async createRecurringOrder(
+    @Body() createRecurringOrderDto: CreateRecurringOrderDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.createRecurringOrder(
+      { ...createRecurringOrderDto, buyerId: user.id },
+      user.id,
+    );
+  }
+
+  @Put('recurring-orders/:id')
+  @ApiOperation({ summary: 'Update a recurring order' })
+  async updateRecurringOrder(
+    @Param('id') id: string,
+    @Body() updateRecurringOrderDto: UpdateRecurringOrderDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.updateRecurringOrder(id, updateRecurringOrderDto, user.id);
+  }
+
+  @Delete('recurring-orders/:id')
+  @ApiOperation({ summary: 'Delete a recurring order' })
+  async deleteRecurringOrder(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.marketplaceService.deleteRecurringOrder(id, user.id);
   }
 
   // ============ Statistics ============

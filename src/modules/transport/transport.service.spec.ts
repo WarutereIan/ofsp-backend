@@ -76,6 +76,38 @@ describe('TransportService', () => {
         findMany: jest.fn(),
         create: jest.fn(),
       },
+      farmPickupSchedule: {
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+        delete: jest.fn(),
+      },
+      aggregationCenter: {
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+      },
+      pickupSlot: {
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      pickupSlotBooking: {
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      pickupReceipt: {
+        findUnique: jest.fn(),
+        create: jest.fn(),
+      },
+      inventoryItem: {
+        findMany: jest.fn(),
+      },
+      $transaction: jest.fn(),
+      $queryRaw: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -459,6 +491,535 @@ describe('TransportService', () => {
           status: 'IN_TRANSIT',
           trackingUpdateId: 'tracking-1',
         },
+      });
+    });
+  });
+
+  // ============ Pickup Schedule Tests ============
+
+  describe('updatePickupSchedule', () => {
+    const mockSchedule = {
+      id: 'schedule-1',
+      scheduleNumber: 'SCH-20250121-000001',
+      providerId: 'user-1',
+      aggregationCenterId: 'center-1',
+      route: 'Route A',
+      scheduledDate: new Date(),
+      scheduledTime: '09:00',
+      totalCapacity: 5000,
+      usedCapacity: 0,
+      availableCapacity: 5000,
+      status: 'DRAFT',
+      aggregationCenter: {
+        id: 'center-1',
+        name: 'Test Center',
+      },
+    };
+
+    it('should update pickup schedule successfully when in DRAFT status', async () => {
+      prisma.farmPickupSchedule.findUnique = jest.fn().mockResolvedValue(mockSchedule);
+      prisma.farmPickupSchedule.update = jest.fn().mockResolvedValue({
+        ...mockSchedule,
+        route: 'Updated Route',
+        totalCapacity: 6000,
+        availableCapacity: 6000,
+      });
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      const updateData = {
+        route: 'Updated Route',
+        totalCapacity: 6000,
+      };
+
+      const result = await service.updatePickupSchedule('schedule-1', updateData, 'user-1');
+
+      expect(result.route).toBe('Updated Route');
+      expect(result.totalCapacity).toBe(6000);
+      expect(prisma.farmPickupSchedule.update).toHaveBeenCalled();
+      expect(activityLogService.createActivityLog).toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when schedule is not in DRAFT status', async () => {
+      prisma.farmPickupSchedule.findUnique = jest.fn().mockResolvedValue({
+        ...mockSchedule,
+        status: 'PUBLISHED',
+      });
+
+      await expect(
+        service.updatePickupSchedule('schedule-1', { route: 'Updated Route' }, 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when user is not the owner', async () => {
+      prisma.farmPickupSchedule.findUnique = jest.fn().mockResolvedValue(mockSchedule);
+
+      await expect(
+        service.updatePickupSchedule('schedule-1', { route: 'Updated Route' }, 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('publishPickupSchedule', () => {
+    const mockSchedule = {
+      id: 'schedule-1',
+      scheduleNumber: 'SCH-20250121-000001',
+      providerId: 'user-1',
+      aggregationCenterId: 'center-1',
+      route: 'Route A',
+      scheduledDate: new Date(),
+      scheduledTime: '09:00',
+      totalCapacity: 5000,
+      usedCapacity: 0,
+      availableCapacity: 5000,
+      status: 'DRAFT',
+      aggregationCenter: {
+        id: 'center-1',
+        name: 'Test Center',
+      },
+    };
+
+    const mockCenter = {
+      id: 'center-1',
+      name: 'Test Center',
+      totalCapacity: 10000,
+      inventory: [
+        { quantity: 2000 },
+        { quantity: 1000 },
+      ],
+    };
+
+    it('should publish pickup schedule successfully', async () => {
+      prisma.farmPickupSchedule.findUnique = jest.fn().mockResolvedValue(mockSchedule);
+      prisma.aggregationCenter.findUnique = jest.fn().mockResolvedValue(mockCenter);
+      prisma.farmPickupSchedule.update = jest.fn().mockResolvedValue({
+        ...mockSchedule,
+        status: 'PUBLISHED',
+        publishedAt: new Date(),
+      });
+      notificationHelperService.createNotification.mockResolvedValue({} as any);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      const result = await service.publishPickupSchedule('schedule-1', 'user-1');
+
+      expect(result.status).toBe('PUBLISHED');
+      expect(result.publishedAt).toBeDefined();
+      expect(result.centerCapacity).toBeDefined();
+      expect(result.centerCapacity.availableCapacity).toBe(7000); // 10000 - 3000
+      expect(notificationHelperService.createNotification).toHaveBeenCalled();
+      expect(activityLogService.createActivityLog).toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when schedule is not in DRAFT status', async () => {
+      prisma.farmPickupSchedule.findUnique = jest.fn().mockResolvedValue({
+        ...mockSchedule,
+        status: 'PUBLISHED',
+      });
+
+      await expect(
+        service.publishPickupSchedule('schedule-1', 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when user is not the owner', async () => {
+      prisma.farmPickupSchedule.findUnique = jest.fn().mockResolvedValue(mockSchedule);
+
+      await expect(
+        service.publishPickupSchedule('schedule-1', 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('cancelPickupSchedule', () => {
+    const mockSchedule = {
+      id: 'schedule-1',
+      scheduleNumber: 'SCH-20250121-000001',
+      providerId: 'user-1',
+      aggregationCenterId: 'center-1',
+      route: 'Route A',
+      totalCapacity: 5000,
+      usedCapacity: 1000,
+      availableCapacity: 4000,
+      status: 'PUBLISHED',
+    };
+
+    const mockBookings = [
+      {
+        id: 'booking-1',
+        slotId: 'slot-1',
+        scheduleId: 'schedule-1',
+        farmerId: 'farmer-1',
+        quantity: 500,
+        slot: {
+          id: 'slot-1',
+          capacity: 1000,
+          usedCapacity: 500,
+          availableCapacity: 500,
+          status: 'BOOKED',
+        },
+      },
+      {
+        id: 'booking-2',
+        slotId: 'slot-2',
+        scheduleId: 'schedule-1',
+        farmerId: 'farmer-2',
+        quantity: 500,
+        slot: {
+          id: 'slot-2',
+          capacity: 1000,
+          usedCapacity: 500,
+          availableCapacity: 500,
+          status: 'BOOKED',
+        },
+      },
+    ];
+
+    it('should cancel pickup schedule and all bookings', async () => {
+      prisma.farmPickupSchedule.findUnique = jest.fn().mockResolvedValue(mockSchedule);
+      prisma.pickupSlotBooking.findMany = jest.fn().mockResolvedValue(mockBookings);
+      prisma.$transaction = jest.fn().mockImplementation(async (callback) => {
+        const tx = {
+          farmPickupSchedule: {
+            update: jest.fn().mockResolvedValue({
+              ...mockSchedule,
+              status: 'CANCELLED',
+            }),
+          },
+          pickupSlotBooking: {
+            update: jest.fn().mockResolvedValue({}),
+          },
+          pickupSlot: {
+            update: jest.fn().mockResolvedValue({}),
+          },
+        };
+        return callback(tx);
+      });
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      const result = await service.cancelPickupSchedule('schedule-1', 'user-1', 'Test reason');
+
+      expect(result.status).toBe('CANCELLED');
+      expect(notificationHelperService.createNotifications).toHaveBeenCalled();
+      expect(activityLogService.createActivityLog).toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when schedule is already completed or cancelled', async () => {
+      prisma.farmPickupSchedule.findUnique = jest.fn().mockResolvedValue({
+        ...mockSchedule,
+        status: 'COMPLETED',
+      });
+
+      await expect(
+        service.cancelPickupSchedule('schedule-1', 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when user is not the owner', async () => {
+      prisma.farmPickupSchedule.findUnique = jest.fn().mockResolvedValue(mockSchedule);
+
+      await expect(
+        service.cancelPickupSchedule('schedule-1', 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('cancelPickupSlotBooking', () => {
+    const mockBooking = {
+      id: 'booking-1',
+      slotId: 'slot-1',
+      scheduleId: 'schedule-1',
+      farmerId: 'farmer-1',
+      quantity: 500,
+      status: 'confirmed',
+      slot: {
+        id: 'slot-1',
+        capacity: 1000,
+        usedCapacity: 500,
+        availableCapacity: 500,
+        status: 'BOOKED',
+        schedule: {
+          id: 'schedule-1',
+          scheduleNumber: 'SCH-001',
+          providerId: 'provider-1',
+        },
+      },
+    };
+
+    it('should cancel pickup slot booking and release capacity', async () => {
+      prisma.pickupSlotBooking.findUnique = jest.fn().mockResolvedValue(mockBooking);
+      prisma.$transaction = jest.fn().mockImplementation(async (callback) => {
+        const tx = {
+          pickupSlotBooking: {
+            update: jest.fn().mockResolvedValue({
+              ...mockBooking,
+              status: 'cancelled',
+              cancelledAt: new Date(),
+            }),
+          },
+          pickupSlot: {
+            update: jest.fn().mockResolvedValue({}),
+          },
+          farmPickupSchedule: {
+            update: jest.fn().mockResolvedValue({}),
+          },
+        };
+        return callback(tx);
+      });
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      const result = await service.cancelPickupSlotBooking('booking-1', 'farmer-1');
+
+      expect(result.status).toBe('cancelled');
+      expect(notificationHelperService.createNotifications).toHaveBeenCalled();
+      expect(activityLogService.createActivityLog).toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when booking is already picked up', async () => {
+      prisma.pickupSlotBooking.findUnique = jest.fn().mockResolvedValue({
+        ...mockBooking,
+        status: 'picked_up',
+      });
+
+      await expect(
+        service.cancelPickupSlotBooking('booking-1', 'farmer-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when user is not the owner', async () => {
+      prisma.pickupSlotBooking.findUnique = jest.fn().mockResolvedValue(mockBooking);
+
+      await expect(
+        service.cancelPickupSlotBooking('booking-1', 'farmer-2'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('confirmPickup', () => {
+    const mockBooking = {
+      id: 'booking-1',
+      slotId: 'slot-1',
+      scheduleId: 'schedule-1',
+      farmerId: 'farmer-1',
+      quantity: 500,
+      location: 'Farm Location',
+      status: 'confirmed',
+      pickupConfirmed: false,
+      slot: {
+        id: 'slot-1',
+        schedule: {
+          id: 'schedule-1',
+          providerId: 'provider-1',
+          aggregationCenterId: 'center-1',
+          scheduledDate: new Date(),
+          route: 'Route A',
+          aggregationCenter: {
+            id: 'center-1',
+            managerId: 'manager-1',
+          },
+        },
+      },
+    };
+
+    it('should confirm pickup and create receipt with batch ID and QR code', async () => {
+      prisma.pickupSlotBooking.findUnique = jest.fn().mockResolvedValue(mockBooking);
+      prisma.$queryRaw = jest.fn().mockResolvedValue([
+        { generate_pickup_receipt_number: 'PUR-20250121-000001' },
+      ]);
+      prisma.$transaction = jest.fn().mockImplementation(async (callback) => {
+        const tx = {
+          pickupReceipt: {
+            create: jest.fn().mockResolvedValue({
+              id: 'receipt-1',
+              receiptNumber: 'PUR-20250121-000001',
+              batchId: 'BATCH-20250121-120000-ABC123',
+              qrCode: 'QR-BATCH-20250121-120000-ABC123',
+            }),
+          },
+          pickupSlotBooking: {
+            update: jest.fn().mockResolvedValue({
+              ...mockBooking,
+              pickupConfirmed: true,
+              pickupConfirmedAt: new Date(),
+              pickupConfirmedBy: 'farmer-1',
+              batchId: 'BATCH-20250121-120000-ABC123',
+              qrCode: 'QR-BATCH-20250121-120000-ABC123',
+              status: 'picked_up',
+              pickupReceipt: {
+                id: 'receipt-1',
+              },
+            }),
+          },
+        };
+        return callback(tx);
+      });
+      notificationHelperService.createNotifications.mockResolvedValue([]);
+      activityLogService.createActivityLog.mockResolvedValue({} as any);
+
+      const confirmData = {
+        variety: 'KENYA',
+        qualityGrade: 'A',
+        photos: ['photo1.jpg'],
+        notes: 'Test notes',
+      };
+
+      const result = await service.confirmPickup('booking-1', confirmData, 'farmer-1');
+
+      expect(result.pickupConfirmed).toBe(true);
+      expect(result.batchId).toBeDefined();
+      expect(result.qrCode).toBeDefined();
+      expect(result.status).toBe('picked_up');
+      expect(notificationHelperService.createNotifications).toHaveBeenCalled();
+      expect(activityLogService.createActivityLog).toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when pickup is already confirmed', async () => {
+      prisma.pickupSlotBooking.findUnique = jest.fn().mockResolvedValue({
+        ...mockBooking,
+        pickupConfirmed: true,
+      });
+
+      await expect(
+        service.confirmPickup('booking-1', { variety: 'KENYA', qualityGrade: 'A' }, 'farmer-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequestException when user is not the owner', async () => {
+      prisma.pickupSlotBooking.findUnique = jest.fn().mockResolvedValue(mockBooking);
+
+      await expect(
+        service.confirmPickup('booking-1', { variety: 'KENYA', qualityGrade: 'A' }, 'farmer-2'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('getPickupReceiptById', () => {
+    const mockReceipt = {
+      id: 'receipt-1',
+      receiptNumber: 'PUR-20250121-000001',
+      batchId: 'BATCH-001',
+      qrCode: 'QR-BATCH-001',
+      booking: {
+        id: 'booking-1',
+        slot: {
+          schedule: {
+            aggregationCenter: {
+              id: 'center-1',
+              name: 'Test Center',
+            },
+          },
+        },
+      },
+      aggregationCenter: {
+        id: 'center-1',
+        name: 'Test Center',
+      },
+    };
+
+    it('should return pickup receipt by ID', async () => {
+      prisma.pickupReceipt.findUnique = jest.fn().mockResolvedValue(mockReceipt);
+
+      const result = await service.getPickupReceiptById('receipt-1');
+
+      expect(result).toEqual(mockReceipt);
+      expect(prisma.pickupReceipt.findUnique).toHaveBeenCalledWith({
+        where: { id: 'receipt-1' },
+        include: expect.any(Object),
+      });
+    });
+
+    it('should throw NotFoundException when receipt not found', async () => {
+      prisma.pickupReceipt.findUnique = jest.fn().mockResolvedValue(null);
+
+      await expect(
+        service.getPickupReceiptById('non-existent'),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getPickupReceiptByBookingId', () => {
+    const mockReceipt = {
+      id: 'receipt-1',
+      receiptNumber: 'PUR-20250121-000001',
+      bookingId: 'booking-1',
+      batchId: 'BATCH-001',
+      qrCode: 'QR-BATCH-001',
+    };
+
+    it('should return pickup receipt by booking ID', async () => {
+      prisma.pickupReceipt.findUnique = jest.fn().mockResolvedValue(mockReceipt);
+
+      const result = await service.getPickupReceiptByBookingId('booking-1');
+
+      expect(result).toEqual(mockReceipt);
+      expect(prisma.pickupReceipt.findUnique).toHaveBeenCalledWith({
+        where: { bookingId: 'booking-1' },
+        include: expect.any(Object),
+      });
+    });
+
+    it('should throw NotFoundException when receipt not found', async () => {
+      prisma.pickupReceipt.findUnique = jest.fn().mockResolvedValue(null);
+
+      await expect(
+        service.getPickupReceiptByBookingId('non-existent'),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getFarmerPickupBookings', () => {
+    const mockBookings = [
+      {
+        id: 'booking-1',
+        farmerId: 'farmer-1',
+        scheduleId: 'schedule-1',
+        quantity: 500,
+        status: 'confirmed',
+        slot: {
+          schedule: {
+            aggregationCenter: {
+              id: 'center-1',
+              name: 'Test Center',
+            },
+          },
+        },
+      },
+    ];
+
+    it('should return farmer pickup bookings', async () => {
+      prisma.pickupSlotBooking.findMany = jest.fn().mockResolvedValue(mockBookings);
+
+      const result = await service.getFarmerPickupBookings('farmer-1');
+
+      expect(result).toEqual(mockBookings);
+      expect(prisma.pickupSlotBooking.findMany).toHaveBeenCalledWith({
+        where: { farmerId: 'farmer-1' },
+        include: expect.any(Object),
+        orderBy: { bookedAt: 'desc' },
+      });
+    });
+
+    it('should filter bookings by status', async () => {
+      prisma.pickupSlotBooking.findMany = jest.fn().mockResolvedValue(mockBookings);
+
+      await service.getFarmerPickupBookings('farmer-1', { status: 'confirmed' });
+
+      expect(prisma.pickupSlotBooking.findMany).toHaveBeenCalledWith({
+        where: { farmerId: 'farmer-1', status: 'confirmed' },
+        include: expect.any(Object),
+        orderBy: { bookedAt: 'desc' },
+      });
+    });
+
+    it('should filter bookings by scheduleId', async () => {
+      prisma.pickupSlotBooking.findMany = jest.fn().mockResolvedValue(mockBookings);
+
+      await service.getFarmerPickupBookings('farmer-1', { scheduleId: 'schedule-1' });
+
+      expect(prisma.pickupSlotBooking.findMany).toHaveBeenCalledWith({
+        where: { farmerId: 'farmer-1', scheduleId: 'schedule-1' },
+        include: expect.any(Object),
+        orderBy: { bookedAt: 'desc' },
       });
     });
   });

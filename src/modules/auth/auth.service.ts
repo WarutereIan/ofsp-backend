@@ -71,10 +71,19 @@ export class AuthService {
   }
 
   async login(loginDto: LoginDto) {
-    const { email, password } = loginDto;
+    const { email, phone, password } = loginDto;
 
-    const user = await this.prisma.user.findUnique({
-      where: { email },
+    // Validate that either email or phone is provided
+    if (!email && !phone) {
+      throw new BadRequestException('Either email or phone must be provided');
+    }
+
+    // Find user by email or phone
+    const user = await this.prisma.user.findFirst({
+      where: {
+        OR: email ? [{ email }] : [],
+        ...(phone ? [{ phone }] : []),
+      },
       include: { profile: true },
     });
 

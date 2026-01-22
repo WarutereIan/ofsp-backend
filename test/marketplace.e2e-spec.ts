@@ -1259,6 +1259,746 @@ describe('MarketplaceController (e2e)', () => {
       } else {
       }
     });
+
+    it('should update RFQ response status to UNDER_REVIEW → activity logs created', async () => {
+      // Create RFQ and response
+      const rfqNumber = await prisma.$queryRaw<Array<{ generate_rfq_number: string }>>`
+        SELECT generate_rfq_number() as generate_rfq_number
+      `;
+
+      const rfq = await prisma.rFQ.create({
+        data: {
+          buyerId: buyerUser.id,
+          rfqNumber: rfqNumber[0].generate_rfq_number,
+          title: 'RFQ for OFSP',
+          productType: 'FRESH_ROOTS',
+          variety: 'KENYA',
+          quantity: 1000,
+          unit: 'kg',
+          qualityGrade: 'A',
+          deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+          deliveryLocation: 'Nairobi',
+          status: 'PUBLISHED',
+        },
+      });
+
+      const rfqResponse = await prisma.rFQResponse.create({
+        data: {
+          rfqId: rfq.id,
+          supplierId: farmerUser.id,
+          quantity: 1000,
+          quantityUnit: 'kg',
+          pricePerUnit: 50,
+          priceUnit: 'kg',
+          totalAmount: 50000,
+          qualityGrade: 'A',
+          status: 'SUBMITTED',
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/marketplace/rfq-responses/${rfqResponse.id}/status`)
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .send({ status: 'UNDER_REVIEW' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify response status updated to UNDER_REVIEW
+      const updatedResponse = await prisma.rFQResponse.findUnique({
+        where: { id: rfqResponse.id },
+      });
+      expect(updatedResponse?.status).toBe('UNDER_REVIEW');
+      expect(updatedResponse?.evaluatedAt).toBeDefined();
+
+      // Verify activity logs
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'RFQ_RESPONSE',
+          entityId: rfqResponse.id,
+        },
+      });
+      expect(activityLogs.length).toBeGreaterThan(0);
+    });
+
+    it('should cancel RFQ → status CANCELLED → all responses WITHDRAWN → notifications sent', async () => {
+      // Create RFQ with responses
+      const rfqNumber = await prisma.$queryRaw<Array<{ generate_rfq_number: string }>>`
+        SELECT generate_rfq_number() as generate_rfq_number
+      `;
+
+      const rfq = await prisma.rFQ.create({
+        data: {
+          buyerId: buyerUser.id,
+          rfqNumber: rfqNumber[0].generate_rfq_number,
+          title: 'RFQ for OFSP',
+          productType: 'FRESH_ROOTS',
+          variety: 'KENYA',
+          quantity: 1000,
+          unit: 'kg',
+          qualityGrade: 'A',
+          deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+          deliveryLocation: 'Nairobi',
+          status: 'PUBLISHED',
+        },
+      });
+
+      // Create multiple responses
+      const response1 = await prisma.rFQResponse.create({
+        data: {
+          rfqId: rfq.id,
+          supplierId: farmerUser.id,
+          quantity: 1000,
+          quantityUnit: 'kg',
+          pricePerUnit: 50,
+          priceUnit: 'kg',
+          totalAmount: 50000,
+          qualityGrade: 'A',
+          status: 'SUBMITTED',
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/marketplace/rfqs/${rfq.id}/cancel`)
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .send({ reason: 'Requirements changed' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify RFQ status updated to CANCELLED
+      const updatedRFQ = await prisma.rFQ.findUnique({
+        where: { id: rfq.id },
+      });
+      expect(updatedRFQ?.status).toBe('CANCELLED');
+
+      // Verify all responses marked as WITHDRAWN
+      const updatedResponse = await prisma.rFQResponse.findUnique({
+        where: { id: response1.id },
+      });
+      expect(updatedResponse?.status).toBe('WITHDRAWN');
+
+      // Verify notifications
+      const notifications = await prisma.notification.findMany({
+        where: {
+          OR: [
+            { userId: buyerUser.id, entityType: 'RFQ', entityId: rfq.id },
+            { userId: farmerUser.id, entityType: 'RFQ', entityId: rfq.id },
+          ],
+        },
+      });
+      expect(notifications.length).toBeGreaterThan(0);
+
+      // Verify activity logs
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'RFQ',
+          entityId: rfq.id,
+        },
+      });
+      expect(activityLogs.length).toBeGreaterThan(0);
+    });
+
+    it('should set RFQ to EVALUATING status', async () => {
+      // Create a published RFQ
+      const rfqNumber = await prisma.$queryRaw<Array<{ generate_rfq_number: string }>>`
+        SELECT generate_rfq_number() as generate_rfq_number
+      `;
+
+      const rfq = await prisma.rFQ.create({
+        data: {
+          buyerId: buyerUser.id,
+          rfqNumber: rfqNumber[0].generate_rfq_number,
+          title: 'RFQ for OFSP',
+          productType: 'FRESH_ROOTS',
+          variety: 'KENYA',
+          quantity: 1000,
+          unit: 'kg',
+          qualityGrade: 'A',
+          deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+          deliveryLocation: 'Nairobi',
+          status: 'PUBLISHED',
+        },
+      });
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/marketplace/rfqs/${rfq.id}/evaluating`)
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .send();
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify RFQ status updated to EVALUATING
+      const updatedRFQ = await prisma.rFQ.findUnique({
+        where: { id: rfq.id },
+      });
+      expect(updatedRFQ?.status).toBe('EVALUATING');
+
+      // Verify activity logs
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'RFQ',
+          entityId: rfq.id,
+          action: 'RFQ_EVALUATING',
+        },
+      });
+      expect(activityLogs.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('RFQ Negative Test Cases', () => {
+    let testRFQ: any;
+    let testRFQResponse: any;
+
+    beforeEach(async () => {
+      // Create a test RFQ
+      const rfqNumber = await prisma.$queryRaw<Array<{ generate_rfq_number: string }>>`
+        SELECT generate_rfq_number() as generate_rfq_number
+      `;
+
+      testRFQ = await prisma.rFQ.create({
+        data: {
+          buyerId: buyerUser.id,
+          rfqNumber: rfqNumber[0].generate_rfq_number,
+          title: 'Test RFQ',
+          productType: 'FRESH_ROOTS',
+          variety: 'KENYA',
+          quantity: 1000,
+          unit: 'kg',
+          qualityGrade: 'A',
+          deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+          deliveryLocation: 'Nairobi',
+          status: 'PUBLISHED',
+        },
+      });
+
+      testRFQResponse = await prisma.rFQResponse.create({
+        data: {
+          rfqId: testRFQ.id,
+          supplierId: farmerUser.id,
+          quantity: 1000,
+          quantityUnit: 'kg',
+          pricePerUnit: 50,
+          priceUnit: 'kg',
+          totalAmount: 50000,
+          qualityGrade: 'A',
+          status: 'SUBMITTED',
+        },
+      });
+    });
+
+    describe('RFQ Creation Negative Cases', () => {
+      it('should reject RFQ creation with missing required fields', async () => {
+        const invalidData = {
+          quantity: 100,
+          // Missing productType, variety, qualityGrade, deliveryDate
+        };
+
+        const response = await request(app.getHttpServer())
+          .post(`/${apiPrefix}/marketplace/rfqs`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send(invalidData);
+
+        expect(response.status).toBe(400);
+      });
+
+      it('should reject RFQ creation with invalid enum values', async () => {
+        const invalidData = {
+          productType: 'INVALID_TYPE',
+          variety: 'KENYA',
+          quantity: 100,
+          qualityGrade: 'A',
+          deliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        };
+
+        const response = await request(app.getHttpServer())
+          .post(`/${apiPrefix}/marketplace/rfqs`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send(invalidData);
+
+        expect(response.status).toBe(400);
+      });
+
+      it('should reject RFQ creation without authentication', async () => {
+        const rfqData = {
+          productType: 'FRESH_ROOTS',
+          variety: 'KENYA',
+          quantity: 100,
+          qualityGrade: 'A',
+          deliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        };
+
+        const response = await request(app.getHttpServer())
+          .post(`/${apiPrefix}/marketplace/rfqs`)
+          .send(rfqData);
+
+        expect(response.status).toBe(401);
+      });
+    });
+
+    describe('RFQ Publish Negative Cases', () => {
+      it('should reject publishing RFQ that is not in DRAFT status', async () => {
+        // RFQ is already PUBLISHED from beforeEach
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/publish`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send();
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('draft');
+      });
+
+      it('should reject publishing RFQ owned by another buyer', async () => {
+        const otherBuyer = await createTestUser(prisma, {
+          email: 'other-buyer-rfq@example.com',
+          role: UserRole.BUYER,
+          status: UserStatus.ACTIVE,
+        });
+        const otherBuyerToken = await getAuthToken(app, otherBuyer.email, 'password123');
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/publish`)
+          .set('Authorization', `Bearer ${otherBuyerToken}`)
+          .send();
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('own');
+
+        // Cleanup
+        await prisma.user.delete({ where: { id: otherBuyer.id } });
+      });
+
+      it('should reject publishing non-existent RFQ', async () => {
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/non-existent-id/publish`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send();
+
+        expect(response.status).toBe(404);
+      });
+    });
+
+    describe('RFQ Response Submission Negative Cases', () => {
+      it('should reject submitting response to DRAFT RFQ', async () => {
+        const draftRFQ = await prisma.rFQ.create({
+          data: {
+            buyerId: buyerUser.id,
+            rfqNumber: 'RFQ-DRAFT-001',
+            title: 'Draft RFQ',
+            productType: 'FRESH_ROOTS',
+            variety: 'KENYA',
+            quantity: 1000,
+            unit: 'kg',
+            qualityGrade: 'A',
+            deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+            deliveryLocation: 'Nairobi',
+            status: 'DRAFT',
+          },
+        });
+
+        const response = await request(app.getHttpServer())
+          .post(`/${apiPrefix}/marketplace/rfqs/${draftRFQ.id}/responses`)
+          .set('Authorization', `Bearer ${farmerToken}`)
+          .send({ pricePerKg: 50 });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('published');
+      });
+
+      it('should reject submitting response after quote deadline', async () => {
+        const pastDate = new Date();
+        pastDate.setDate(pastDate.getDate() - 1);
+
+        const expiredRFQ = await prisma.rFQ.create({
+          data: {
+            buyerId: buyerUser.id,
+            rfqNumber: 'RFQ-EXPIRED-001',
+            title: 'Expired RFQ',
+            productType: 'FRESH_ROOTS',
+            variety: 'KENYA',
+            quantity: 1000,
+            unit: 'kg',
+            qualityGrade: 'A',
+            deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            quoteDeadline: pastDate,
+            deliveryLocation: 'Nairobi',
+            status: 'PUBLISHED',
+          },
+        });
+
+        const response = await request(app.getHttpServer())
+          .post(`/${apiPrefix}/marketplace/rfqs/${expiredRFQ.id}/responses`)
+          .set('Authorization', `Bearer ${farmerToken}`)
+          .send({ pricePerKg: 50 });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('deadline');
+      });
+
+      it('should reject submitting response without pricePerKg', async () => {
+        const response = await request(app.getHttpServer())
+          .post(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/responses`)
+          .set('Authorization', `Bearer ${farmerToken}`)
+          .send({});
+
+        expect(response.status).toBe(400);
+      });
+
+      it('should reject submitting response to CLOSED RFQ', async () => {
+        const closedRFQ = await prisma.rFQ.create({
+          data: {
+            buyerId: buyerUser.id,
+            rfqNumber: 'RFQ-CLOSED-001',
+            title: 'Closed RFQ',
+            productType: 'FRESH_ROOTS',
+            variety: 'KENYA',
+            quantity: 1000,
+            unit: 'kg',
+            qualityGrade: 'A',
+            deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+            deliveryLocation: 'Nairobi',
+            status: 'CLOSED',
+            closedAt: new Date(),
+          },
+        });
+
+        const response = await request(app.getHttpServer())
+          .post(`/${apiPrefix}/marketplace/rfqs/${closedRFQ.id}/responses`)
+          .set('Authorization', `Bearer ${farmerToken}`)
+          .send({ pricePerKg: 50 });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('published');
+      });
+    });
+
+    describe('RFQ Response Status Update Negative Cases', () => {
+      it('should reject updating response status with invalid status', async () => {
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfq-responses/${testRFQResponse.id}/status`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send({ status: 'INVALID_STATUS' });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('Invalid status');
+      });
+
+      it('should reject updating response status when buyer does not own RFQ', async () => {
+        const otherBuyer = await createTestUser(prisma, {
+          email: 'other-buyer-status@example.com',
+          role: UserRole.BUYER,
+          status: UserStatus.ACTIVE,
+        });
+        const otherBuyerToken = await getAuthToken(app, otherBuyer.email, 'password123');
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfq-responses/${testRFQResponse.id}/status`)
+          .set('Authorization', `Bearer ${otherBuyerToken}`)
+          .send({ status: 'SHORTLISTED' });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('own');
+
+        // Cleanup
+        await prisma.user.delete({ where: { id: otherBuyer.id } });
+      });
+
+      it('should reject updating non-existent response', async () => {
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfq-responses/non-existent-id/status`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send({ status: 'SHORTLISTED' });
+
+        expect(response.status).toBe(404);
+      });
+    });
+
+    describe('RFQ Award Negative Cases', () => {
+      it('should reject awarding RFQ when buyer does not own RFQ', async () => {
+        const otherBuyer = await createTestUser(prisma, {
+          email: 'other-buyer-award@example.com',
+          role: UserRole.BUYER,
+          status: UserStatus.ACTIVE,
+        });
+        const otherBuyerToken = await getAuthToken(app, otherBuyer.email, 'password123');
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/award/${testRFQResponse.id}`)
+          .set('Authorization', `Bearer ${otherBuyerToken}`)
+          .send();
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('own');
+
+        // Cleanup
+        await prisma.user.delete({ where: { id: otherBuyer.id } });
+      });
+
+      it('should reject awarding response that does not belong to RFQ', async () => {
+        const otherRFQ = await prisma.rFQ.create({
+          data: {
+            buyerId: buyerUser.id,
+            rfqNumber: 'RFQ-OTHER-001',
+            title: 'Other RFQ',
+            productType: 'FRESH_ROOTS',
+            variety: 'KENYA',
+            quantity: 1000,
+            unit: 'kg',
+            qualityGrade: 'A',
+            deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+            deliveryLocation: 'Nairobi',
+            status: 'PUBLISHED',
+          },
+        });
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${otherRFQ.id}/award/${testRFQResponse.id}`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send();
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('belong');
+      });
+
+      it('should reject awarding non-existent response', async () => {
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/award/non-existent-id`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send();
+
+        expect(response.status).toBe(404);
+      });
+    });
+
+    describe('RFQ Convert to Order Negative Cases', () => {
+      it('should reject converting non-awarded response to order', async () => {
+        // Response is SUBMITTED, not AWARDED
+        const response = await request(app.getHttpServer())
+          .post(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/responses/${testRFQResponse.id}/convert-to-order`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send({
+            deliveryAddress: '123 Main St',
+            deliveryCounty: 'Nairobi',
+          });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('awarded');
+      });
+
+      it('should reject converting response when buyer does not own RFQ', async () => {
+        // First award the response
+        await prisma.rFQResponse.update({
+          where: { id: testRFQResponse.id },
+          data: { status: 'AWARDED' },
+        });
+
+        const otherBuyer = await createTestUser(prisma, {
+          email: 'other-buyer-convert@example.com',
+          role: UserRole.BUYER,
+          status: UserStatus.ACTIVE,
+        });
+        const otherBuyerToken = await getAuthToken(app, otherBuyer.email, 'password123');
+
+        const response = await request(app.getHttpServer())
+          .post(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/responses/${testRFQResponse.id}/convert-to-order`)
+          .set('Authorization', `Bearer ${otherBuyerToken}`)
+          .send({
+            deliveryAddress: '123 Main St',
+            deliveryCounty: 'Nairobi',
+          });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('own');
+
+        // Cleanup
+        await prisma.user.delete({ where: { id: otherBuyer.id } });
+      });
+    });
+
+    describe('RFQ Close Negative Cases', () => {
+      it('should reject closing RFQ that is already closed', async () => {
+        const closedRFQ = await prisma.rFQ.create({
+          data: {
+            buyerId: buyerUser.id,
+            rfqNumber: 'RFQ-CLOSED-002',
+            title: 'Already Closed RFQ',
+            productType: 'FRESH_ROOTS',
+            variety: 'KENYA',
+            quantity: 1000,
+            unit: 'kg',
+            qualityGrade: 'A',
+            deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+            deliveryLocation: 'Nairobi',
+            status: 'CLOSED',
+            closedAt: new Date(),
+          },
+        });
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${closedRFQ.id}/close`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send();
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('already');
+      });
+
+      it('should reject closing RFQ when buyer does not own RFQ', async () => {
+        const otherBuyer = await createTestUser(prisma, {
+          email: 'other-buyer-close@example.com',
+          role: UserRole.BUYER,
+          status: UserStatus.ACTIVE,
+        });
+        const otherBuyerToken = await getAuthToken(app, otherBuyer.email, 'password123');
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/close`)
+          .set('Authorization', `Bearer ${otherBuyerToken}`)
+          .send();
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('own');
+
+        // Cleanup
+        await prisma.user.delete({ where: { id: otherBuyer.id } });
+      });
+    });
+
+    describe('RFQ Cancel Negative Cases', () => {
+      it('should reject cancelling RFQ that is already cancelled', async () => {
+        const cancelledRFQ = await prisma.rFQ.create({
+          data: {
+            buyerId: buyerUser.id,
+            rfqNumber: 'RFQ-CANCELLED-001',
+            title: 'Cancelled RFQ',
+            productType: 'FRESH_ROOTS',
+            variety: 'KENYA',
+            quantity: 1000,
+            unit: 'kg',
+            qualityGrade: 'A',
+            deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+            deliveryLocation: 'Nairobi',
+            status: 'CANCELLED',
+            closedAt: new Date(),
+          },
+        });
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${cancelledRFQ.id}/cancel`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send({ reason: 'Test' });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('CANCELLED');
+      });
+
+      it('should reject cancelling RFQ that is already awarded', async () => {
+        const awardedRFQ = await prisma.rFQ.create({
+          data: {
+            buyerId: buyerUser.id,
+            rfqNumber: 'RFQ-AWARDED-001',
+            title: 'Awarded RFQ',
+            productType: 'FRESH_ROOTS',
+            variety: 'KENYA',
+            quantity: 1000,
+            unit: 'kg',
+            qualityGrade: 'A',
+            deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+            deliveryLocation: 'Nairobi',
+            status: 'AWARDED',
+            awardedAt: new Date(),
+          },
+        });
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${awardedRFQ.id}/cancel`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send({ reason: 'Test' });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('AWARDED');
+      });
+
+      it('should reject cancelling RFQ when buyer does not own RFQ', async () => {
+        const otherBuyer = await createTestUser(prisma, {
+          email: 'other-buyer-cancel@example.com',
+          role: UserRole.BUYER,
+          status: UserStatus.ACTIVE,
+        });
+        const otherBuyerToken = await getAuthToken(app, otherBuyer.email, 'password123');
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/cancel`)
+          .set('Authorization', `Bearer ${otherBuyerToken}`)
+          .send({ reason: 'Test' });
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('own');
+
+        // Cleanup
+        await prisma.user.delete({ where: { id: otherBuyer.id } });
+      });
+    });
+
+    describe('RFQ Evaluating Negative Cases', () => {
+      it('should reject setting RFQ to evaluating when not PUBLISHED', async () => {
+        const draftRFQ = await prisma.rFQ.create({
+          data: {
+            buyerId: buyerUser.id,
+            rfqNumber: 'RFQ-DRAFT-002',
+            title: 'Draft RFQ',
+            productType: 'FRESH_ROOTS',
+            variety: 'KENYA',
+            quantity: 1000,
+            unit: 'kg',
+            qualityGrade: 'A',
+            deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            quoteDeadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+            deliveryLocation: 'Nairobi',
+            status: 'DRAFT',
+          },
+        });
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${draftRFQ.id}/evaluating`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send();
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('published');
+      });
+
+      it('should reject setting RFQ to evaluating when buyer does not own RFQ', async () => {
+        const otherBuyer = await createTestUser(prisma, {
+          email: 'other-buyer-eval@example.com',
+          role: UserRole.BUYER,
+          status: UserStatus.ACTIVE,
+        });
+        const otherBuyerToken = await getAuthToken(app, otherBuyer.email, 'password123');
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/evaluating`)
+          .set('Authorization', `Bearer ${otherBuyerToken}`)
+          .send();
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('own');
+
+        // Cleanup
+        await prisma.user.delete({ where: { id: otherBuyer.id } });
+      });
+    });
   });
 
   describe('RFQ to Order Conversion', () => {
@@ -1368,6 +2108,63 @@ describe('MarketplaceController (e2e)', () => {
         },
       });
       expect(rfqLogs.length + responseLogs.length + orderLogs.length).toBeGreaterThan(0);
+    });
+
+    it('should convert awarded RFQ response to order using dedicated convert endpoint', async () => {
+      // First award the response
+      await prisma.rFQResponse.update({
+        where: { id: testRFQResponse.id },
+        data: { status: 'AWARDED', awardedAt: new Date() },
+      });
+      await prisma.rFQ.update({
+        where: { id: testRFQ.id },
+        data: { status: 'AWARDED', awardedAt: new Date() },
+      });
+
+      const response = await request(app.getHttpServer())
+        .post(`/${apiPrefix}/marketplace/rfqs/${testRFQ.id}/responses/${testRFQResponse.id}/convert-to-order`)
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .send({
+          deliveryAddress: '456 Convert St',
+          deliveryCounty: 'Mombasa',
+        });
+      
+      if (response.status !== 201) {
+        console.error('❌ RFQ response conversion failed:', response.status, JSON.stringify(response.body, null, 2));
+      }
+      expect(response.status).toBe(201);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data).toBeDefined();
+      
+      const order = response.body.data;
+      expect(order.rfqId).toBe(testRFQ.id);
+      expect(order.rfqResponseId).toBe(testRFQResponse.id);
+      expect(order.status).toBe('ORDER_PLACED');
+      expect(order.farmerId).toBe(farmerUser.id);
+      expect(order.buyerId).toBe(buyerUser.id);
+      expect(order.deliveryAddress).toBe('456 Convert St');
+      expect(order.deliveryCounty).toBe('Mombasa');
+
+      // Verify notifications (to supplier and buyer)
+      const notifications = await prisma.notification.findMany({
+        where: {
+          OR: [
+            { userId: farmerUser.id, entityType: 'ORDER', entityId: order.id },
+            { userId: buyerUser.id, entityType: 'ORDER', entityId: order.id },
+          ],
+        },
+      });
+      expect(notifications.length).toBeGreaterThanOrEqual(2);
+
+      // Verify activity logs
+      const orderLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'ORDER',
+          entityId: order.id,
+        },
+      });
+      expect(orderLogs.length).toBeGreaterThan(0);
+      expect(orderLogs.some(log => log.action === 'RFQ_CONVERTED_TO_ORDER')).toBe(true);
     });
   });
 
@@ -1574,6 +2371,65 @@ describe('MarketplaceController (e2e)', () => {
       if (activityLogs.length > 0) {
       } else {
       }
+    });
+
+    it('should update sourcing request → only when DRAFT → activity logs created', async () => {
+      // Create a draft sourcing request first
+      const requestId = await prisma.$queryRaw<Array<{ generate_sourcing_request_id: string }>>`
+        SELECT generate_sourcing_request_id() as generate_sourcing_request_id
+      `;
+
+      const sourcingRequest = await prisma.sourcingRequest.create({
+        data: {
+          buyerId: buyerUser.id,
+          requestId: requestId[0].generate_sourcing_request_id,
+          title: 'Sourcing Request for OFSP',
+          productType: 'FRESH_ROOTS',
+          variety: 'KENYA',
+          quantity: 1000,
+          unit: 'kg',
+          qualityGrade: 'A',
+          deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          deliveryLocation: 'Nairobi',
+          status: 'DRAFT',
+        },
+      });
+
+      const updateData = {
+        quantity: 2000,
+        deliveryLocation: 'Mombasa',
+        description: 'Updated requirements',
+        title: 'Updated Sourcing Request',
+      };
+
+      const response = await request(app.getHttpServer())
+        .put(`/${apiPrefix}/marketplace/sourcing-requests/${sourcingRequest.id}`)
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .send(updateData);
+
+      if (response.status !== 200) {
+        console.error('❌ Sourcing request update failed:', response.status, JSON.stringify(response.body, null, 2));
+      }
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data).toBeDefined();
+
+      const updatedRequest = response.body.data;
+      expect(updatedRequest.quantity).toBe(2000);
+      expect(updatedRequest.deliveryLocation).toBe('Mombasa');
+      expect(updatedRequest.title).toBe('Updated Sourcing Request');
+      expect(updatedRequest.additionalRequirements).toBe('Updated requirements');
+
+      // Verify activity logs
+      const activityLogs = await prisma.activityLog.findMany({
+        where: {
+          entityType: 'SOURCING_REQUEST',
+          entityId: sourcingRequest.id,
+          action: 'SOURCING_REQUEST_UPDATED',
+        },
+      });
+      expect(activityLogs.length).toBeGreaterThan(0);
+      expect(activityLogs[0].metadata).toHaveProperty('updatedFields');
     });
 
     it('should publish sourcing request → status OPEN → notifications sent → activity logs created', async () => {
@@ -1950,6 +2806,203 @@ describe('MarketplaceController (e2e)', () => {
       if (activityLogs.length > 0) {
       } else {
       }
+    });
+  });
+
+  describe('Sourcing Request Update Negative Test Cases', () => {
+    let testSourcingRequest: any;
+
+    beforeEach(async () => {
+      // Create a test sourcing request
+      const requestId = await prisma.$queryRaw<Array<{ generate_sourcing_request_id: string }>>`
+        SELECT generate_sourcing_request_id() as generate_sourcing_request_id
+      `;
+
+      testSourcingRequest = await prisma.sourcingRequest.create({
+        data: {
+          buyerId: buyerUser.id,
+          requestId: requestId[0].generate_sourcing_request_id,
+          title: 'Test Sourcing Request',
+          productType: 'FRESH_ROOTS',
+          variety: 'KENYA',
+          quantity: 1000,
+          unit: 'kg',
+          qualityGrade: 'A',
+          deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          deliveryLocation: 'Nairobi',
+          status: 'DRAFT',
+        },
+      });
+    });
+
+    describe('Sourcing Request Update Negative Cases', () => {
+      it('should reject updating sourcing request that is not in DRAFT status', async () => {
+        // Publish the request first
+        await prisma.sourcingRequest.update({
+          where: { id: testSourcingRequest.id },
+          data: { status: 'OPEN' },
+        });
+
+        const updateData = {
+          quantity: 2000,
+        };
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/sourcing-requests/${testSourcingRequest.id}`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send(updateData);
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('draft');
+      });
+
+      it('should reject updating CLOSED sourcing request', async () => {
+        await prisma.sourcingRequest.update({
+          where: { id: testSourcingRequest.id },
+          data: { status: 'CLOSED' },
+        });
+
+        const updateData = {
+          quantity: 2000,
+        };
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/sourcing-requests/${testSourcingRequest.id}`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send(updateData);
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('draft');
+      });
+
+      it('should reject updating FULFILLED sourcing request', async () => {
+        await prisma.sourcingRequest.update({
+          where: { id: testSourcingRequest.id },
+          data: { status: 'FULFILLED' },
+        });
+
+        const updateData = {
+          quantity: 2000,
+        };
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/sourcing-requests/${testSourcingRequest.id}`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send(updateData);
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('draft');
+      });
+
+      it('should reject updating sourcing request when buyer does not own request', async () => {
+        const otherBuyer = await createTestUser(prisma, {
+          email: 'other-buyer-sourcing@example.com',
+          role: UserRole.BUYER,
+          status: UserStatus.ACTIVE,
+        });
+        const otherBuyerToken = await getAuthToken(app, otherBuyer.email, 'password123');
+
+        const updateData = {
+          quantity: 2000,
+        };
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/sourcing-requests/${testSourcingRequest.id}`)
+          .set('Authorization', `Bearer ${otherBuyerToken}`)
+          .send(updateData);
+
+        expect(response.status).toBe(400);
+        expect(response.body.message).toContain('own');
+
+        // Cleanup
+        await prisma.user.delete({ where: { id: otherBuyer.id } });
+      });
+
+      it('should reject updating non-existent sourcing request', async () => {
+        const updateData = {
+          quantity: 2000,
+        };
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/sourcing-requests/non-existent-id`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send(updateData);
+
+        expect(response.status).toBe(404);
+      });
+
+      it('should reject updating with invalid enum values', async () => {
+        const updateData = {
+          productType: 'INVALID_TYPE',
+        };
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/sourcing-requests/${testSourcingRequest.id}`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send(updateData);
+
+        expect(response.status).toBe(400);
+      });
+
+      it('should reject updating with negative quantity', async () => {
+        const updateData = {
+          quantity: -100,
+        };
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/sourcing-requests/${testSourcingRequest.id}`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send(updateData);
+
+        expect(response.status).toBe(400);
+      });
+
+      it('should reject updating without authentication', async () => {
+        const updateData = {
+          quantity: 2000,
+        };
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/sourcing-requests/${testSourcingRequest.id}`)
+          .send(updateData);
+
+        expect(response.status).toBe(401);
+      });
+
+      it('should successfully update when request is in DRAFT status', async () => {
+        // Ensure request is in DRAFT status
+        await prisma.sourcingRequest.update({
+          where: { id: testSourcingRequest.id },
+          data: { status: 'DRAFT' },
+        });
+
+        const updateData = {
+          quantity: 2000,
+          deliveryLocation: 'Kisumu',
+          title: 'Updated Title',
+        };
+
+        const response = await request(app.getHttpServer())
+          .put(`/${apiPrefix}/marketplace/sourcing-requests/${testSourcingRequest.id}`)
+          .set('Authorization', `Bearer ${buyerToken}`)
+          .send(updateData);
+
+        expect(response.status).toBe(200);
+        expect(response.body.success).toBe(true);
+        expect(response.body.data.quantity).toBe(2000);
+        expect(response.body.data.deliveryLocation).toBe('Kisumu');
+        expect(response.body.data.title).toBe('Updated Title');
+
+        // Verify activity log created
+        const activityLogs = await prisma.activityLog.findMany({
+          where: {
+            entityType: 'SOURCING_REQUEST',
+            entityId: testSourcingRequest.id,
+            action: 'SOURCING_REQUEST_UPDATED',
+          },
+        });
+        expect(activityLogs.length).toBeGreaterThan(0);
+      });
     });
   });
 
