@@ -61,6 +61,15 @@ export class MarketplaceService {
 
   // ============ Produce Listings ============
 
+  /** Normalize listing status to Prisma ListingStatus enum (ACTIVE | SOLD | INACTIVE | EXPIRED) */
+  private normalizeListingStatus(status: string): 'ACTIVE' | 'SOLD' | 'INACTIVE' | 'EXPIRED' | null {
+    const s = status?.toUpperCase();
+    const valid = ['ACTIVE', 'SOLD', 'INACTIVE', 'EXPIRED'] as const;
+    if (valid.includes(s as any)) return s as any;
+    if (s === 'PENDING') return 'EXPIRED'; // Frontend "pending" maps to backend EXPIRED
+    return null;
+  }
+
   async getListings(filters?: {
     farmerId?: string;
     variety?: string;
@@ -80,8 +89,9 @@ export class MarketplaceService {
     if (filters?.county) {
       where.county = filters.county;
     }
-    if (filters?.status) {
-      where.status = filters.status;
+    const normalizedStatus = filters?.status ? this.normalizeListingStatus(filters.status) : null;
+    if (normalizedStatus) {
+      where.status = normalizedStatus;
     }
     if (filters?.minPrice || filters?.maxPrice) {
       where.pricePerKg = {};
@@ -367,15 +377,38 @@ export class MarketplaceService {
         },
       });
       
-      // Update sourcing request fulfilled quantity
+      // Update sourcing request fulfilled quantity (per lifecycle: Stage 5 - Converted to Order)
       const offer = await this.prisma.supplierOffer.findUnique({
         where: { id: data.supplierOfferId },
         include: { sourcingRequest: true },
       });
       
       if (offer) {
-        const newFulfilled = (offer.sourcingRequest.fulfilled || 0) + offer.quantity;
+        // Convert offer quantity to the same unit as sourcing request for accurate calculation
+        let offerQuantityInRequestUnit = offer.quantity;
+        if (offer.quantityUnit !== offer.sourcingRequest.unit) {
+          // Convert to kg first, then to request unit
+          let quantityInKg = offer.quantity;
+          if (offer.quantityUnit === 'tons') {
+            quantityInKg = offer.quantity * 1000;
+          } else if (offer.quantityUnit === 'units') {
+            // Assume 1 unit = 50kg for bags (common for sweet potatoes)
+            quantityInKg = offer.quantity * 50;
+          }
+          
+          // Convert from kg to request unit
+          if (offer.sourcingRequest.unit === 'tons') {
+            offerQuantityInRequestUnit = quantityInKg / 1000;
+          } else if (offer.sourcingRequest.unit === 'units') {
+            offerQuantityInRequestUnit = quantityInKg / 50;
+          } else {
+            offerQuantityInRequestUnit = quantityInKg;
+          }
+        }
+
+        const newFulfilled = (offer.sourcingRequest.fulfilled || 0) + offerQuantityInRequestUnit;
         const isFullyFulfilled = newFulfilled >= offer.sourcingRequest.quantity;
+        const oldStatus = offer.sourcingRequest.status;
         
         await this.prisma.sourcingRequest.update({
           where: { id: offer.sourcingRequest.id },
@@ -384,10 +417,65 @@ export class MarketplaceService {
             status: isFullyFulfilled ? 'FULFILLED' : offer.sourcingRequest.status,
           },
         });
+
+        // Create activity log for sourcing request fulfillment status change (per lifecycle)
+        if (isFullyFulfilled && oldStatus !== 'FULFILLED') {
+          try {
+            await this.activityLogService.createActivityLog({
+              userId: buyerId,
+              action: 'SOURCING_REQUEST_FULFILLED',
+              entityType: 'SOURCING_REQUEST',
+              entityId: offer.sourcingRequest.id,
+              metadata: { 
+                requestId: offer.sourcingRequest.requestId,
+                orderId: order.id,
+                offerId: offer.id,
+                fulfilledQuantity: newFulfilled,
+                totalQuantity: offer.sourcingRequest.quantity,
+              },
+            });
+          } catch (error) {
+            console.error('Failed to create activity log for sourcing request fulfillment:', error);
+          }
+        }
+
+        // Create specific notifications for sourcing request conversion (per lifecycle: Stage 5)
+        try {
+          await Promise.all([
+            // To Supplier: "Sourcing request #XXX converted to order #YYY"
+            this.notificationHelperService.createNotification({
+              userId: offer.farmerId,
+              type: 'SUPPLIER_OFFER',
+              title: 'Offer Converted to Order',
+              message: `Sourcing request #${offer.sourcingRequest.requestId} converted to order #${order.orderNumber}`,
+              priority: 'HIGH',
+              entityType: 'MARKETPLACE_ORDER',
+              entityId: order.id,
+              actionUrl: `/orders/${order.id}`,
+              actionLabel: 'View Order',
+              metadata: { requestId: offer.sourcingRequest.requestId, orderNumber: order.orderNumber },
+            }),
+            // To Buyer: "Order #YYY created from sourcing request #XXX"
+            this.notificationHelperService.createNotification({
+              userId: buyerId,
+              type: 'MARKETPLACE_ORDER',
+              title: 'Order Created from Sourcing Request',
+              message: `Order #${order.orderNumber} created from sourcing request #${offer.sourcingRequest.requestId}`,
+              priority: 'MEDIUM',
+              entityType: 'MARKETPLACE_ORDER',
+              entityId: order.id,
+              actionUrl: `/orders/${order.id}`,
+              actionLabel: 'View Order',
+              metadata: { requestId: offer.sourcingRequest.requestId, orderNumber: order.orderNumber },
+            }),
+          ]);
+        } catch (error) {
+          console.error('Failed to create notifications for sourcing request conversion:', error);
+        }
       }
     }
 
-    // Create notifications
+    // Create general order notifications
     await this.notificationHelperService.notifyOrderPlaced(order, buyer, farmer);
 
     // Create activity logs
@@ -417,6 +505,25 @@ export class MarketplaceService {
 
     if (!isBuyerOrFarmer && !isSystemUser && !isTransportProvider) {
       throw new BadRequestException('You can only update your own orders');
+    }
+
+    // Check if transitioning from PAYMENT_SECURED to IN_TRANSIT requires farmer confirmation
+    if (oldStatus === 'PAYMENT_SECURED' && newStatus === 'IN_TRANSIT' && !isSystemUser) {
+      const payment = await this.prisma.payment.findUnique({
+        where: { orderId: id },
+      });
+      
+      // Check if payment exists and has been confirmed by farmer
+      // Using type assertion since Prisma types may not be updated yet after schema change
+      const paymentData = payment as any;
+      const paymentStatus = paymentData?.status as string;
+      const farmerConfirmed = paymentData?.farmerConfirmedBy;
+      
+      if (!payment || paymentStatus !== 'CONFIRMED_BY_FARMER' || !farmerConfirmed) {
+        throw new BadRequestException(
+          'Cannot proceed to fulfillment. Payment must be confirmed by farmer first.'
+        );
+      }
     }
 
     // Validate status transition
@@ -1550,6 +1657,9 @@ export class MarketplaceService {
     const title = data.title || `Sourcing Request for ${data.variety} - ${data.quantity}${data.unit || 'kg'}`;
     const unit = data.unit || 'kg';
 
+    const isPublished = data.publishImmediately === true;
+    const status = isPublished ? 'OPEN' : 'DRAFT';
+
     const sourcingRequest = await this.prisma.sourcingRequest.create({
       data: {
         buyerId,
@@ -1563,7 +1673,11 @@ export class MarketplaceService {
         deadline: new Date(data.deliveryDate),
         deliveryRegion: data.deliveryLocation,
         additionalRequirements: data.description,
-        status: 'DRAFT',
+        priceRangeMin: data.priceRangeMin,
+        priceRangeMax: data.priceRangeMax,
+        pricePerUnit: data.pricePerUnit,
+        priceUnit: data.priceUnit,
+        status,
       },
       include: {
         buyer: {
@@ -1574,14 +1688,15 @@ export class MarketplaceService {
       },
     });
 
-    // Create notifications (per lifecycle: buyer)
     try {
       await this.notificationHelperService.createNotification({
         userId: buyerId,
         type: 'SOURCING_REQUEST',
-        title: 'Sourcing Request Draft Saved',
-        message: `Sourcing request draft saved: ${title}`,
-        priority: 'LOW',
+        title: isPublished ? 'Sourcing Request Published' : 'Sourcing Request Draft Saved',
+        message: isPublished
+          ? `Sourcing request #${sourcingRequest.requestId} published successfully`
+          : `Sourcing request draft saved: ${title}`,
+        priority: isPublished ? 'MEDIUM' : 'LOW',
         entityType: 'SOURCING_REQUEST',
         entityId: sourcingRequest.id,
         actionUrl: `/sourcing-requests/${sourcingRequest.id}`,
@@ -1592,14 +1707,13 @@ export class MarketplaceService {
       console.error('Failed to create notification for sourcing request creation:', error);
     }
 
-    // Create activity logs
     try {
       await this.activityLogService.createActivityLog({
         userId: buyerId,
-        action: 'SOURCING_REQUEST_CREATED',
+        action: isPublished ? 'SOURCING_REQUEST_PUBLISHED' : 'SOURCING_REQUEST_CREATED',
         entityType: 'SOURCING_REQUEST',
         entityId: sourcingRequest.id,
-        metadata: { requestId: sourcingRequest.requestId, status: 'DRAFT' },
+        metadata: { requestId: sourcingRequest.requestId, status },
       });
     } catch (error) {
       console.error('Failed to create activity log for sourcing request creation:', error);
@@ -1620,32 +1734,71 @@ export class MarketplaceService {
       throw new BadRequestException('You can only update your own sourcing requests');
     }
 
-    // Only allow updates when in DRAFT status (per lifecycle: draft → open → closed/fulfilled)
-    if (request.status !== 'DRAFT') {
-      throw new BadRequestException('Only draft sourcing requests can be updated');
+    // Prevent updates to closed or fulfilled requests
+    if (request.status === 'CLOSED' || request.status === 'FULFILLED') {
+      throw new BadRequestException('Cannot update closed or fulfilled sourcing requests');
+    }
+
+    // Fields that can be updated for published requests (OPEN/URGENT)
+    const allowedPublishedFields = ['deliveryDate', 'deliveryLocation', 'description'];
+    const isPublishedRequest = request.status === 'OPEN' || request.status === 'URGENT';
+    
+    // Check if trying to update restricted fields on published request
+    if (isPublishedRequest) {
+      const restrictedFields = ['title', 'productType', 'variety', 'quantity', 'unit', 'qualityGrade', 'priceRangeMin', 'priceRangeMax', 'pricePerUnit', 'priceUnit'];
+      const attemptedRestrictedFields = restrictedFields.filter(field => {
+        return data[field] !== undefined;
+      });
+      
+      if (attemptedRestrictedFields.length > 0) {
+        throw new BadRequestException(
+          `Cannot update ${attemptedRestrictedFields.join(', ')} on published requests. Only deliveryDate, deliveryLocation, and description can be updated.`
+        );
+      }
     }
 
     // Build update data
     const updateData: any = {};
 
-    if (data.title !== undefined) {
-      updateData.title = data.title;
+    // Only allow these fields for draft requests
+    if (request.status === 'DRAFT') {
+      if (data.title !== undefined) {
+        updateData.title = data.title;
+      }
+      if (data.productType !== undefined) {
+        updateData.productType = data.productType as any;
+      }
+      if (data.variety !== undefined) {
+        updateData.variety = data.variety as any;
+      }
+      if (data.quantity !== undefined) {
+        updateData.quantity = data.quantity;
+      }
+      if (data.unit !== undefined) {
+        updateData.unit = data.unit;
+      }
+      if (data.qualityGrade !== undefined) {
+        updateData.qualityGrade = data.qualityGrade as any;
+      }
+      if (data.description !== undefined) {
+        updateData.additionalRequirements = data.description;
+      }
+      // Price fields can only be updated for draft requests
+      if (data.priceRangeMin !== undefined) {
+        updateData.priceRangeMin = data.priceRangeMin;
+      }
+      if (data.priceRangeMax !== undefined) {
+        updateData.priceRangeMax = data.priceRangeMax;
+      }
+      if (data.pricePerUnit !== undefined) {
+        updateData.pricePerUnit = data.pricePerUnit;
+      }
+      if (data.priceUnit !== undefined) {
+        updateData.priceUnit = data.priceUnit;
+      }
     }
-    if (data.productType !== undefined) {
-      updateData.productType = data.productType as any;
-    }
-    if (data.variety !== undefined) {
-      updateData.variety = data.variety as any;
-    }
-    if (data.quantity !== undefined) {
-      updateData.quantity = data.quantity;
-    }
-    if (data.unit !== undefined) {
-      updateData.unit = data.unit;
-    }
-    if (data.qualityGrade !== undefined) {
-      updateData.qualityGrade = data.qualityGrade as any;
-    }
+
+    // These fields can be updated for both draft and published requests
     if (data.deliveryDate !== undefined) {
       updateData.deadline = new Date(data.deliveryDate);
     }
@@ -1804,10 +1957,11 @@ export class MarketplaceService {
       data: {
         sourcingRequestId: data.sourcingRequestId!,
         farmerId,
-        quantity: request.quantity,
-        quantityUnit: request.unit,
+        quantity: data.quantity,
+        quantityUnit: data.quantityUnit,
         pricePerKg: data.pricePerKg,
-        qualityGrade: request.qualityGrade || 'A' as any,
+        qualityGrade: (data.qualityGrade || request.qualityGrade || 'A') as any,
+        batchId: data.batchId || null,
         status: 'pending',
       },
       include: {
@@ -1916,6 +2070,20 @@ export class MarketplaceService {
       throw new BadRequestException('You can only accept offers for your own sourcing requests');
     }
 
+    if (offer.status === 'accepted') {
+      throw new BadRequestException('This offer has already been accepted');
+    }
+
+    if (offer.status === 'rejected') {
+      throw new BadRequestException('This offer has been rejected and cannot be accepted');
+    }
+
+    if (offer.status === 'converted') {
+      throw new BadRequestException('This offer has already been converted to an order');
+    }
+
+    // Stage 4 & 5: Accept offer and automatically convert to order (per lifecycle)
+    // Update offer status to accepted first
     const updatedOffer = await this.prisma.supplierOffer.update({
       where: { id: offerId },
       data: { status: 'accepted' },
@@ -1929,39 +2097,137 @@ export class MarketplaceService {
       },
     });
 
-    // Create notifications (per lifecycle: supplier, buyer)
-    try {
-      await Promise.all([
-        this.notificationHelperService.createNotification({
-          userId: offer.farmerId,
-          type: 'SUPPLIER_OFFER',
-          title: 'Offer Accepted',
-          message: `Your offer for sourcing request #${offer.sourcingRequest.requestId} has been accepted`,
-          priority: 'HIGH',
-          entityType: 'SUPPLIER_OFFER',
-          entityId: offerId,
-          actionUrl: `/sourcing-requests/${offer.sourcingRequest.id}/offers/${offerId}`,
-          actionLabel: 'View Offer',
-          metadata: { requestId: offer.sourcingRequest.requestId },
-        }),
-        this.notificationHelperService.createNotification({
-          userId: buyerId,
-          type: 'SUPPLIER_OFFER',
-          title: 'Offer Accepted',
-          message: `Offer accepted. You can now convert to order`,
-          priority: 'MEDIUM',
-          entityType: 'SUPPLIER_OFFER',
-          entityId: offerId,
-          actionUrl: `/sourcing-requests/${offer.sourcingRequest.id}/offers/${offerId}`,
-          actionLabel: 'Convert to Order',
-          metadata: { requestId: offer.sourcingRequest.requestId },
-        }),
-      ]);
-    } catch (error) {
-      console.error('Failed to create notifications for supplier offer acceptance:', error);
+    // Stage 5: Automatically create order from accepted offer
+    // Generate order number
+    const orderNumber = await this.prisma.$queryRaw<Array<{ generate_order_number: string }>>`
+      SELECT generate_order_number() as generate_order_number
+    `;
+
+    // Generate batch ID and QR code for traceability
+    const { batchId, qrCode } = generateBatchTraceability();
+
+    // Convert offer quantity to kg (orders store quantity in kg)
+    let quantityInKg = offer.quantity;
+    if (offer.quantityUnit === 'tons') {
+      quantityInKg = offer.quantity * 1000;
+    } else if (offer.quantityUnit === 'units') {
+      // Assume 1 unit = 50kg for bags (common for sweet potatoes)
+      quantityInKg = offer.quantity * 50;
     }
 
-    // Create activity logs
+    const totalAmount = quantityInKg * offer.pricePerKg;
+
+    // Get buyer and farmer info for notifications
+    const [buyer, farmer] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: buyerId },
+        include: { profile: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: offer.farmerId },
+        include: { profile: true },
+      }),
+    ]);
+
+    // Create order from supplier offer
+    const order = await this.prisma.marketplaceOrder.create({
+      data: {
+        buyerId,
+        farmerId: offer.farmerId,
+        orderNumber: orderNumber[0].generate_order_number,
+        supplierOfferId: offerId,
+        sourcingRequestId: offer.sourcingRequestId,
+        variety: offer.sourcingRequest.variety as any,
+        quantity: quantityInKg,
+        pricePerKg: offer.pricePerKg,
+        totalAmount,
+        deliveryAddress: offer.sourcingRequest.deliveryLocation || offer.sourcingRequest.deliveryRegion || '',
+        deliveryCounty: offer.sourcingRequest.deliveryRegion || '',
+        deliveryNotes: offer.sourcingRequest.additionalRequirements || null,
+        batchId,
+        qrCode,
+        status: 'ORDER_PLACED',
+      },
+      include: {
+        buyer: {
+          include: {
+            profile: true,
+          },
+        },
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    // Update offer status to converted and link to order
+    await this.prisma.supplierOffer.update({
+      where: { id: offerId },
+      data: { 
+        status: 'converted',
+        orderId: order.id,
+      },
+    });
+
+    // Update sourcing request fulfilled quantity (per lifecycle: Stage 5 - Converted to Order)
+    // Convert offer quantity to the same unit as sourcing request for accurate calculation
+    let offerQuantityInRequestUnit = offer.quantity;
+    if (offer.quantityUnit !== offer.sourcingRequest.unit) {
+      // Convert to kg first, then to request unit
+      let quantityInKgForRequest = offer.quantity;
+      if (offer.quantityUnit === 'tons') {
+        quantityInKgForRequest = offer.quantity * 1000;
+      } else if (offer.quantityUnit === 'units') {
+        // Assume 1 unit = 50kg for bags (common for sweet potatoes)
+        quantityInKgForRequest = offer.quantity * 50;
+      }
+      
+      // Convert from kg to request unit
+      if (offer.sourcingRequest.unit === 'tons') {
+        offerQuantityInRequestUnit = quantityInKgForRequest / 1000;
+      } else if (offer.sourcingRequest.unit === 'units') {
+        offerQuantityInRequestUnit = quantityInKgForRequest / 50;
+      } else {
+        offerQuantityInRequestUnit = quantityInKgForRequest;
+      }
+    }
+
+    const newFulfilled = (offer.sourcingRequest.fulfilled || 0) + offerQuantityInRequestUnit;
+    const isFullyFulfilled = newFulfilled >= offer.sourcingRequest.quantity;
+    const oldStatus = offer.sourcingRequest.status;
+    
+    await this.prisma.sourcingRequest.update({
+      where: { id: offer.sourcingRequest.id },
+      data: {
+        fulfilled: newFulfilled,
+        status: isFullyFulfilled ? 'FULFILLED' : offer.sourcingRequest.status,
+      },
+    });
+
+    // Create activity log for sourcing request fulfillment status change (per lifecycle)
+    if (isFullyFulfilled && oldStatus !== 'FULFILLED') {
+      try {
+        await this.activityLogService.createActivityLog({
+          userId: buyerId,
+          action: 'SOURCING_REQUEST_FULFILLED',
+          entityType: 'SOURCING_REQUEST',
+          entityId: offer.sourcingRequest.id,
+          metadata: { 
+            requestId: offer.sourcingRequest.requestId,
+            orderId: order.id,
+            offerId: offer.id,
+            fulfilledQuantity: newFulfilled,
+            totalQuantity: offer.sourcingRequest.quantity,
+          },
+        });
+      } catch (error) {
+        console.error('Failed to create activity log for sourcing request fulfillment:', error);
+      }
+    }
+
+    // Create activity logs for offer acceptance
     try {
       await Promise.all([
         this.activityLogService.createActivityLog({
@@ -1983,7 +2249,65 @@ export class MarketplaceService {
       console.error('Failed to create activity logs for supplier offer acceptance:', error);
     }
 
-    return updatedOffer;
+    // Create general order activity logs
+    try {
+      await Promise.all([
+        this.activityLogService.logOrderCreated(order, buyerId, { source: 'sourcing_request' }),
+        this.activityLogService.logOrderCreated(order, offer.farmerId, { source: 'sourcing_request' }),
+      ]);
+    } catch (error) {
+      console.error('Failed to create activity logs for order creation:', error);
+    }
+
+    // Create notifications (per lifecycle: Stage 5 - Converted to Order)
+    try {
+      await Promise.all([
+        // To Supplier: "Sourcing request #XXX converted to order #YYY"
+        this.notificationHelperService.createNotification({
+          userId: offer.farmerId,
+          type: 'SUPPLIER_OFFER',
+          title: 'Offer Converted to Order',
+          message: `Sourcing request #${offer.sourcingRequest.requestId} converted to order #${order.orderNumber}`,
+          priority: 'HIGH',
+          entityType: 'MARKETPLACE_ORDER',
+          entityId: order.id,
+          actionUrl: `/orders/${order.id}`,
+          actionLabel: 'View Order',
+          metadata: { requestId: offer.sourcingRequest.requestId, orderNumber: order.orderNumber },
+        }),
+        // To Buyer: "Order #YYY created from sourcing request #XXX"
+        this.notificationHelperService.createNotification({
+          userId: buyerId,
+          type: 'MARKETPLACE_ORDER',
+          title: 'Order Created from Sourcing Request',
+          message: `Order #${order.orderNumber} created from sourcing request #${offer.sourcingRequest.requestId}`,
+          priority: 'MEDIUM',
+          entityType: 'MARKETPLACE_ORDER',
+          entityId: order.id,
+          actionUrl: `/orders/${order.id}`,
+          actionLabel: 'View Order',
+          metadata: { requestId: offer.sourcingRequest.requestId, orderNumber: order.orderNumber },
+        }),
+        // General order placed notifications
+        this.notificationHelperService.notifyOrderPlaced(order, buyer, farmer),
+      ]);
+    } catch (error) {
+      console.error('Failed to create notifications for supplier offer conversion:', error);
+    }
+
+    // Return updated offer with order information
+    return await this.prisma.supplierOffer.findUnique({
+      where: { id: offerId },
+      include: {
+        sourcingRequest: true,
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+        order: true,
+      },
+    });
   }
 
   // ============ Negotiations ============

@@ -1,36 +1,86 @@
 import {
   Controller,
   Post,
+  Get,
   Body,
+  Req,
+  Res,
   HttpCode,
   HttpStatus,
-  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiCookieAuth,
 } from '@nestjs/swagger';
+import * as express from 'express';
+import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+
+// Cookie configuration
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax' as const,
+  path: '/',
+};
 
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private configService: ConfigService,
+  ) {}
+
+  /**
+   * Set auth cookies on the response
+   */
+  private setAuthCookies(res: express.Response, accessToken: string, refreshToken: string): void {
+    // Access token: short-lived (matches JWT_EXPIRATION, default 7d but should be shorter)
+    const accessMaxAge = 15 * 60 * 1000; // 15 minutes
+    res.cookie('access_token', accessToken, {
+      ...COOKIE_OPTIONS,
+      maxAge: accessMaxAge,
+    });
+
+    // Refresh token: long-lived (matches JWT_REFRESH_EXPIRATION)
+    const refreshExpiration = this.configService.get<string>('JWT_REFRESH_EXPIRATION', '30d');
+    const refreshDays = parseInt(refreshExpiration.replace('d', '')) || 30;
+    res.cookie('refresh_token', refreshToken, {
+      ...COOKIE_OPTIONS,
+      maxAge: refreshDays * 24 * 60 * 60 * 1000,
+      path: '/api/v1/auth', // Only sent to auth endpoints (refresh/logout)
+    });
+  }
+
+  /**
+   * Clear auth cookies
+   */
+  private clearAuthCookies(res: express.Response): void {
+    res.clearCookie('access_token', { ...COOKIE_OPTIONS });
+    res.clearCookie('refresh_token', { ...COOKIE_OPTIONS, path: '/api/v1/auth' });
+  }
 
   @Public()
   @Post('register')
   @ApiOperation({ summary: 'Register a new user' })
   @ApiResponse({ status: 201, description: 'User registered successfully' })
   @ApiResponse({ status: 400, description: 'Bad request' })
-  async register(@Body() registerDto: RegisterDto) {
-    return this.authService.register(registerDto);
+  async register(
+    @Body() registerDto: RegisterDto,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.register(registerDto);
+    this.setAuthCookies(res, result.accessToken, result.refreshToken);
+    // Return user info and tokens (tokens still in body for backwards compatibility)
+    return result;
   }
 
   @Public()
@@ -39,26 +89,63 @@ export class AuthController {
   @ApiOperation({ summary: 'Login user' })
   @ApiResponse({ status: 200, description: 'Login successful' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
-  async login(@Body() loginDto: LoginDto) {
-    return this.authService.login(loginDto);
+  async login(
+    @Body() loginDto: LoginDto,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.login(loginDto);
+    this.setAuthCookies(res, result.accessToken, result.refreshToken);
+    // Return user info and tokens (tokens still in body for backwards compatibility)
+    return result;
   }
 
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Refresh access token' })
+  @ApiOperation({ summary: 'Refresh access token using refresh token from cookie or body' })
   @ApiResponse({ status: 200, description: 'Token refreshed successfully' })
   @ApiResponse({ status: 401, description: 'Invalid refresh token' })
-  async refresh(@Body() refreshTokenDto: RefreshTokenDto) {
-    return this.authService.refreshTokens(refreshTokenDto.refreshToken);
+  async refresh(
+    @Req() req: express.Request,
+    @Res({ passthrough: true }) res: express.Response,
+    @Body() body: { refreshToken?: string },
+  ) {
+    // Get refresh token from cookie first, then body
+    const refreshToken = req.cookies?.refresh_token || body.refreshToken;
+    if (!refreshToken) {
+      res.status(HttpStatus.UNAUTHORIZED);
+      return { message: 'No refresh token provided' };
+    }
+
+    const result = await this.authService.refreshTokens(refreshToken);
+    this.setAuthCookies(res, result.accessToken, result.refreshToken);
+    // Return tokens for backwards compatibility
+    return result;
   }
 
   @ApiBearerAuth()
+  @ApiCookieAuth()
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Logout user' })
   @ApiResponse({ status: 200, description: 'Logout successful' })
-  async logout(@CurrentUser('id') userId: string) {
-    return this.authService.logout(userId);
+  async logout(
+    @CurrentUser('id') userId: string,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.logout(userId);
+    this.clearAuthCookies(res);
+    return result;
+  }
+
+  @ApiBearerAuth()
+  @ApiCookieAuth()
+  @Get('me')
+  @ApiOperation({ summary: 'Get current authenticated user' })
+  @ApiResponse({ status: 200, description: 'Current user info' })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  async me(@CurrentUser() user: { id: string; email: string; role: string }) {
+    // Get full user details
+    return this.authService.getUserById(user.id);
   }
 }

@@ -17,6 +17,8 @@ import {
   UpdatePaymentStatusDto,
   ReleaseEscrowDto,
   DisputeEscrowDto,
+  ConfirmPaymentDto,
+  ConfirmPaymentByFarmerDto,
 } from './dto';
 
 @ApiTags('Payments')
@@ -73,6 +75,26 @@ export class PaymentController {
     return this.paymentService.updatePaymentStatus(id, data);
   }
 
+  @Post('orders/:orderId/confirm')
+  @ApiOperation({ summary: 'Confirm payment for an order (manual confirmation with evidence)' })
+  async confirmOrderPayment(
+    @Param('orderId') orderId: string,
+    @Body() data: ConfirmPaymentDto,
+    @Request() req: any,
+  ) {
+    return this.paymentService.confirmOrderPayment(orderId, data, req.user.id);
+  }
+
+  @Post('orders/:orderId/confirm-by-farmer')
+  @ApiOperation({ summary: 'Farmer confirms receipt of payment for an order' })
+  async confirmPaymentByFarmer(
+    @Param('orderId') orderId: string,
+    @Body() data: ConfirmPaymentByFarmerDto,
+    @Request() req: any,
+  ) {
+    return this.paymentService.confirmPaymentByFarmer(orderId, data, req.user.id);
+  }
+
   // ============ Escrow Transactions ============
 
   @Get('escrow')
@@ -104,7 +126,7 @@ export class PaymentController {
     @Body() data: ReleaseEscrowDto,
     @Request() req: any,
   ) {
-    return this.paymentService.releaseEscrow(id, data, req.user.userId);
+    return this.paymentService.releaseEscrow(id, data, req.user.id);
   }
 
   @Put('escrow/:id/dispute')
@@ -114,7 +136,7 @@ export class PaymentController {
     @Body() data: DisputeEscrowDto,
     @Request() req: any,
   ) {
-    return this.paymentService.disputeEscrow(id, data, req.user.userId);
+    return this.paymentService.disputeEscrow(id, data, req.user.id);
   }
 
   // ============ Payment History ============

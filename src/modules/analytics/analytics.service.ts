@@ -699,15 +699,19 @@ export class AnalyticsService {
       });
 
       // Get farmer profiles in a single batch query
-      const farmerIds = orderAggregation.map(a => a.farmerId);
+      const farmerIds = orderAggregation
+        .map(a => a.farmerId)
+        .filter((id): id is string => id !== null);
       const profiles = await this.prisma.profile.findMany({
         where: { userId: { in: farmerIds } },
         select: { userId: true, firstName: true, lastName: true, subCounty: true },
       });
       const profileMap = new Map(profiles.map(p => [p.userId, p]));
 
-      entries = orderAggregation.map((agg, index) => {
-        const profile = profileMap.get(agg.farmerId);
+      entries = orderAggregation
+        .filter(agg => agg.farmerId !== null)
+        .map((agg, index) => {
+          const profile = profileMap.get(agg.farmerId!);
         const fullName = profile
           ? `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || 'Unknown'
           : 'Unknown';
@@ -721,7 +725,7 @@ export class AnalyticsService {
             : orderCount;
 
         return {
-          id: agg.farmerId,
+          id: agg.farmerId!,
           name: fullName,
           score,
           totalRevenue,
@@ -729,9 +733,9 @@ export class AnalyticsService {
           orderCount,
           avgRating: 0,
           subCounty: profile?.subCounty || 'Unknown',
-          isCurrentUser: user?.id === agg.farmerId,
+          isCurrentUser: user?.id === agg.farmerId!,
           farmerName: fullName,
-          userId: agg.farmerId,
+          userId: agg.farmerId!,
           rank: index + 1,
           metric,
         };
@@ -758,22 +762,26 @@ export class AnalyticsService {
       });
 
       // Get farmer profiles in a single batch query
-      const farmerIds = ratingAggregation.map(a => a.ratedUserId);
+      const farmerIds = ratingAggregation
+        .map(a => a.ratedUserId)
+        .filter((id): id is string => id !== null);
       const profiles = await this.prisma.profile.findMany({
         where: { userId: { in: farmerIds } },
         select: { userId: true, firstName: true, lastName: true, subCounty: true },
       });
       const profileMap = new Map(profiles.map(p => [p.userId, p]));
 
-      entries = ratingAggregation.map((agg, index) => {
-        const profile = profileMap.get(agg.ratedUserId);
+      entries = ratingAggregation
+        .filter(agg => agg.ratedUserId !== null)
+        .map((agg, index) => {
+        const profile = profileMap.get(agg.ratedUserId!);
         const fullName = profile
           ? `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || 'Unknown'
           : 'Unknown';
         const avgRating = agg._avg.rating || 0;
 
         return {
-          id: agg.ratedUserId,
+          id: agg.ratedUserId!,
           name: fullName,
           score: avgRating,
           totalRevenue: 0,
@@ -781,9 +789,9 @@ export class AnalyticsService {
           orderCount: 0,
           avgRating: Math.round(avgRating * 10) / 10,
           subCounty: profile?.subCounty || 'Unknown',
-          isCurrentUser: user?.id === agg.ratedUserId,
+          isCurrentUser: user?.id === agg.ratedUserId!,
           farmerName: fullName,
-          userId: agg.ratedUserId,
+          userId: agg.ratedUserId!,
           rank: index + 1,
           metric,
         };
@@ -810,22 +818,26 @@ export class AnalyticsService {
       });
 
       // Get farmer profiles in a single batch query
-      const farmerIds = qualityAggregation.map(a => a.farmerId);
+      const farmerIds = qualityAggregation
+        .map(a => a.farmerId)
+        .filter((id): id is string => id !== null);
       const profiles = await this.prisma.profile.findMany({
         where: { userId: { in: farmerIds } },
         select: { userId: true, firstName: true, lastName: true, subCounty: true },
       });
       const profileMap = new Map(profiles.map(p => [p.userId, p]));
 
-      entries = qualityAggregation.map((agg, index) => {
-        const profile = profileMap.get(agg.farmerId);
+      entries = qualityAggregation
+        .filter(agg => agg.farmerId !== null)
+        .map((agg, index) => {
+          const profile = profileMap.get(agg.farmerId!);
         const fullName = profile
           ? `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || 'Unknown'
           : 'Unknown';
         const qualityScore = agg._avg.qualityScore || 0;
 
         return {
-          id: agg.farmerId,
+          id: agg.farmerId!,
           name: fullName,
           score: qualityScore,
           totalRevenue: 0,
@@ -833,9 +845,9 @@ export class AnalyticsService {
           orderCount: 0,
           avgRating: 0,
           subCounty: profile?.subCounty || 'Unknown',
-          isCurrentUser: user?.id === agg.farmerId,
+          isCurrentUser: user?.id === agg.farmerId!,
           farmerName: fullName,
-          userId: agg.farmerId,
+          userId: agg.farmerId!,
           rank: index + 1,
           metric,
         };

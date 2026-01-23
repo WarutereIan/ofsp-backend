@@ -8,6 +8,8 @@ import {
   UpdatePaymentStatusDto,
   ReleaseEscrowDto,
   DisputeEscrowDto,
+  ConfirmPaymentDto,
+  ConfirmPaymentByFarmerDto,
 } from './dto';
 
 @Injectable()
@@ -497,6 +499,297 @@ export class PaymentService {
   }
 
   // ============ Statistics ============
+
+  async confirmOrderPayment(orderId: string, data: ConfirmPaymentDto, buyerId: string) {
+    // Validate confirmation checkbox
+    if (!data.confirmed) {
+      throw new BadRequestException('You must confirm that you have made the payment');
+    }
+
+    // Get the order
+    const order = await this.marketplaceService.getOrderById(orderId);
+
+    // Validate buyer owns the order
+    // Convert both to strings for comparison to handle any type mismatches
+    const orderBuyerId = String(order.buyerId || '').trim();
+    const requestBuyerId = String(buyerId || '').trim();
+    
+    if (!orderBuyerId) {
+      throw new BadRequestException('Order does not have a buyer assigned');
+    }
+    
+    if (orderBuyerId !== requestBuyerId) {
+      // Log for debugging (in production, you might want to use a logger)
+      console.error(
+        `Payment confirmation authorization failed: Order buyerId=${orderBuyerId}, Request userId=${requestBuyerId}, OrderId=${orderId}`
+      );
+      throw new BadRequestException('You can only confirm payment for your own orders');
+    }
+
+    // Validate order is in correct status
+    if (order.status !== 'ORDER_ACCEPTED' && order.status !== 'ORDER_PLACED') {
+      throw new BadRequestException(`Cannot confirm payment for order with status: ${order.status}`);
+    }
+
+    // Validate payment amount matches order total (allow small variance for rounding)
+    const amountDifference = Math.abs(data.amount - order.totalAmount);
+    if (amountDifference > 0.01) {
+      throw new BadRequestException(
+        `Payment amount (KES ${data.amount}) does not match order total (KES ${order.totalAmount})`
+      );
+    }
+
+    // Check if payment already exists
+    let payment = await this.prisma.payment.findUnique({
+      where: { orderId },
+    });
+
+    const paymentDate = new Date(data.paymentDate);
+    const confirmedAt = new Date();
+
+    if (payment) {
+      // Update existing payment
+      payment = await this.prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          method: data.method as any,
+          transactionReference: data.transactionReference,
+          amount: data.amount,
+          paymentDate,
+          paymentDetails: data.paymentDetails,
+          paymentEvidence: data.paymentEvidence,
+          confirmedBy: buyerId,
+          confirmedAt,
+          status: 'SECURED',
+          securedAt: confirmedAt,
+        },
+        include: {
+          order: true,
+        },
+      });
+    } else {
+      // Create new payment record
+      const referenceNumber = await this.prisma.$queryRaw<Array<{ generate_payment_reference: string }>>`
+        SELECT generate_payment_reference() as generate_payment_reference
+      `;
+
+      payment = await this.prisma.payment.create({
+        data: {
+          referenceNumber: referenceNumber[0].generate_payment_reference,
+          orderId,
+          amount: data.amount,
+          currency: 'KES',
+          method: data.method as any,
+          status: 'SECURED',
+          orderType: 'marketplace',
+          payerId: buyerId,
+          payeeId: order.farmerId,
+          transactionReference: data.transactionReference,
+          paymentDate,
+          paymentDetails: data.paymentDetails,
+          paymentEvidence: data.paymentEvidence,
+          confirmedBy: buyerId,
+          confirmedAt,
+          securedAt: confirmedAt,
+        },
+        include: {
+          order: true,
+        },
+      });
+    }
+
+      // Update order status to PAYMENT_SECURED
+      try {
+        await this.marketplaceService.updateOrderStatus(
+          orderId,
+          { status: 'PAYMENT_SECURED' },
+          buyerId,
+        );
+      } catch (error) {
+        console.error('Failed to update order status:', error);
+        // Don't fail the payment confirmation if order update fails
+      }
+
+      // Create notifications
+      try {
+        const buyerName = order.buyer?.profile
+          ? `${order.buyer.profile.firstName || ''} ${order.buyer.profile.lastName || ''}`.trim() || order.buyer.email
+          : order.buyer?.email || 'Buyer';
+
+        await this.notificationHelperService.createNotification({
+          userId: order.farmerId,
+          type: 'PAYMENT',
+          title: 'Payment Confirmed by Buyer',
+          message: `Payment confirmed for order #${order.orderNumber}. Amount: KES ${data.amount.toLocaleString()}. Transaction: ${data.transactionReference}. Please confirm receipt to proceed`,
+          priority: 'HIGH',
+          entityType: 'PAYMENT',
+          entityId: payment.id,
+          actionUrl: `/orders/${orderId}`,
+          actionLabel: 'Confirm Payment',
+          metadata: {
+            referenceNumber: payment.referenceNumber,
+            orderId,
+            orderNumber: order.orderNumber,
+            amount: data.amount,
+            transactionReference: data.transactionReference,
+          },
+        });
+
+        await this.notificationHelperService.createNotification({
+          userId: buyerId,
+          type: 'PAYMENT',
+          title: 'Payment Confirmation Recorded',
+          message: `Payment confirmation recorded successfully. Waiting for farmer confirmation for order #${order.orderNumber}`,
+          priority: 'MEDIUM',
+          entityType: 'PAYMENT',
+          entityId: payment.id,
+          actionUrl: `/orders/${orderId}`,
+          actionLabel: 'View Order',
+          metadata: {
+            referenceNumber: payment.referenceNumber,
+            orderId,
+            orderNumber: order.orderNumber,
+          },
+        });
+      } catch (error) {
+        console.error('Failed to create notifications:', error);
+      }
+
+    // Create activity log
+    try {
+      await this.activityLogService.createActivityLog({
+        userId: buyerId,
+        action: 'PAYMENT_CONFIRMED',
+        entityType: 'PAYMENT',
+        entityId: payment.id,
+        metadata: {
+          referenceNumber: payment.referenceNumber,
+          orderId,
+          orderNumber: order.orderNumber,
+          amount: data.amount,
+          method: data.method,
+          transactionReference: data.transactionReference,
+          hasEvidence: !!data.paymentEvidence,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to create activity log:', error);
+    }
+
+    return payment;
+  }
+
+  async confirmPaymentByFarmer(orderId: string, data: ConfirmPaymentByFarmerDto, farmerId: string) {
+    // Validate confirmation checkbox
+    if (!data.confirmed) {
+      throw new BadRequestException('You must confirm that you have received the payment');
+    }
+
+    // Get the order
+    const order = await this.marketplaceService.getOrderById(orderId);
+
+    // Validate farmer owns the order
+    if (order.farmerId !== farmerId) {
+      throw new BadRequestException('You can only confirm payment for your own orders');
+    }
+
+    // Get the payment
+    const payment = await this.prisma.payment.findUnique({
+      where: { orderId },
+    });
+
+    if (!payment) {
+      throw new NotFoundException('Payment record not found for this order');
+    }
+
+    // Validate payment has been confirmed by buyer
+    if (payment.status !== 'SECURED' || !payment.confirmedBy) {
+      throw new BadRequestException('Payment must be confirmed by buyer first');
+    }
+
+    // Validate farmer hasn't already confirmed
+    if (payment.farmerConfirmedBy) {
+      throw new BadRequestException('Payment has already been confirmed by farmer');
+    }
+
+    // Update payment with farmer confirmation
+    const farmerConfirmedAt = new Date();
+    const updatedPayment = await this.prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: 'CONFIRMED_BY_FARMER',
+        farmerConfirmedBy: farmerId,
+        farmerConfirmedAt,
+        farmerConfirmationNotes: data.confirmationNotes,
+      },
+      include: {
+        order: true,
+      },
+    });
+
+    // Create notifications
+    try {
+      const farmerName = order.farmer?.profile
+        ? `${order.farmer.profile.firstName || ''} ${order.farmer.profile.lastName || ''}`.trim() || order.farmer.email
+        : order.farmer?.email || 'Farmer';
+
+      await this.notificationHelperService.createNotification({
+        userId: order.buyerId,
+        type: 'PAYMENT',
+        title: 'Payment Confirmed by Farmer',
+        message: `Farmer has confirmed receipt of payment for order #${order.orderNumber}. Order is being processed`,
+        priority: 'HIGH',
+        entityType: 'PAYMENT',
+        entityId: payment.id,
+        actionUrl: `/orders/${orderId}`,
+        actionLabel: 'View Order',
+        metadata: {
+          referenceNumber: payment.referenceNumber,
+          orderId,
+          orderNumber: order.orderNumber,
+        },
+      });
+
+      await this.notificationHelperService.createNotification({
+        userId: farmerId,
+        type: 'PAYMENT',
+        title: 'Payment Confirmation Recorded',
+        message: `Payment confirmation recorded. You can now proceed with order fulfillment for order #${order.orderNumber}`,
+        priority: 'MEDIUM',
+        entityType: 'PAYMENT',
+        entityId: payment.id,
+        actionUrl: `/orders/${orderId}`,
+        actionLabel: 'View Order',
+        metadata: {
+          referenceNumber: payment.referenceNumber,
+          orderId,
+          orderNumber: order.orderNumber,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to create notifications:', error);
+    }
+
+    // Create activity log
+    try {
+      await this.activityLogService.createActivityLog({
+        userId: farmerId,
+        action: 'PAYMENT_CONFIRMED_BY_FARMER',
+        entityType: 'PAYMENT',
+        entityId: payment.id,
+        metadata: {
+          referenceNumber: payment.referenceNumber,
+          orderId,
+          orderNumber: order.orderNumber,
+          hasNotes: !!data.confirmationNotes,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to create activity log:', error);
+    }
+
+    return updatedPayment;
+  }
 
   async getPaymentStats(userId?: string) {
     const where = userId

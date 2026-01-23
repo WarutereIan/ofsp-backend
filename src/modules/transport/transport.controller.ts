@@ -198,14 +198,14 @@ export class TransportController {
     return this.transportService.createPickupSlot(createPickupSlotDto);
   }
 
-  @Post('pickup-slots/:id/book')
-  @ApiOperation({ summary: 'Book a pickup slot' })
+  @Post('pickup-schedules/:scheduleId/book')
+  @ApiOperation({ summary: 'Book a slot within a pickup schedule (creates slot dynamically)' })
   async bookPickupSlot(
-    @Param('id') id: string,
+    @Param('scheduleId') scheduleId: string,
     @Body() bookPickupSlotDto: BookPickupSlotDto,
     @CurrentUser() user: any,
   ) {
-    return this.transportService.bookPickupSlot(id, bookPickupSlotDto, user.id);
+    return this.transportService.bookPickupSlot(scheduleId, bookPickupSlotDto, user.id);
   }
 
   @Delete('pickup-slots/bookings/:id')

@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
   Request,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AggregationService } from './aggregation.service';
@@ -74,6 +75,8 @@ export class AggregationController {
     @Query('variety') variety?: string,
     @Query('dateFrom') dateFrom?: string,
     @Query('dateTo') dateTo?: string,
+    @Query('batchId') batchId?: string,
+    @Query('status') status?: string,
   ) {
     return this.aggregationService.getStockTransactions({
       centerId,
@@ -81,7 +84,22 @@ export class AggregationController {
       variety,
       dateFrom,
       dateTo,
+      batchId,
+      status,
     });
+  }
+
+  @Get('batches/search')
+  @ApiOperation({ summary: 'Search batches using PostgreSQL full-text search' })
+  async searchBatches(
+    @Query('q') query: string,
+    @Query('limit') limit?: string,
+  ) {
+    const limitNum = limit ? parseInt(limit, 10) : 10;
+    if (limitNum > 50) {
+      throw new BadRequestException('Limit cannot exceed 50');
+    }
+    return this.aggregationService.searchBatches(query, limitNum);
   }
 
   @Post('stock-in')
@@ -100,6 +118,28 @@ export class AggregationController {
     @Request() req: any,
   ) {
     return this.aggregationService.createStockOut(data, req.user.id);
+  }
+
+  @Post('stock-transactions/:id/confirm')
+  @ApiOperation({ summary: 'Confirm a pending stock transaction' })
+  async confirmStockTransaction(
+    @Param('id') id: string,
+    @Request() req: any,
+  ) {
+    return this.aggregationService.confirmStockTransaction(id, req.user.id);
+  }
+
+  @Post('stock-transactions/:id/reject')
+  @ApiOperation({ summary: 'Reject a pending stock transaction' })
+  async rejectStockTransaction(
+    @Param('id') id: string,
+    @Body() body: { reason: string },
+    @Request() req: any,
+  ) {
+    if (!body.reason || body.reason.trim().length === 0) {
+      throw new BadRequestException('Rejection reason is required');
+    }
+    return this.aggregationService.rejectStockTransaction(id, req.user.id, body.reason);
   }
 
   // ============ Inventory ============

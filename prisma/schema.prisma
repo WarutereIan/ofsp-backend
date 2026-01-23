@@ -80,6 +80,8 @@ model User {
   advisories                Advisory[]
   buyerRecurringOrders      RecurringOrder[]    @relation("BuyerRecurringOrders")
   farmerRecurringOrders     RecurringOrder[]    @relation("FarmerRecurringOrders")
+  pickupSchedulesAsProvider FarmPickupSchedule[] @relation("PickupScheduleProvider")
+  pickupSlotBookings        PickupSlotBooking[]  @relation("PickupSlotBookingFarmer")
   badgeProgress             BadgeProgress[]     @relation("UserBadges")
 
   @@index([email])
@@ -267,6 +269,7 @@ enum MarketplaceOrderStatus {
 enum PaymentStatus {
   PENDING
   SECURED
+  CONFIRMED_BY_FARMER
   RELEASED
   REFUNDED
   DISPUTED
@@ -948,6 +951,7 @@ model FarmPickupSchedule {
   scheduleNumber String @unique
 
   providerId          String
+  provider            User              @relation("PickupScheduleProvider", fields: [providerId], references: [id])
   aggregationCenterId String
   aggregationCenter   AggregationCenter @relation(fields: [aggregationCenterId], references: [id])
 
@@ -1047,6 +1051,7 @@ model PickupSlotBooking {
   slot       PickupSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
   scheduleId String
   farmerId   String
+  farmer     User       @relation("PickupSlotBookingFarmer", fields: [farmerId], references: [id])
 
   quantity     Float // kg
   location     String
@@ -1138,6 +1143,12 @@ enum StockTransactionType {
   TRANSFER
   WASTAGE
   ADJUSTMENT
+}
+
+enum StockTransactionStatus {
+  PENDING_CONFIRMATION // Created by farmer at pickup, awaiting center confirmation
+  CONFIRMED // Confirmed by aggregation center
+  REJECTED // Rejected by aggregation center
 }
 
 enum StockStatus {
@@ -1247,6 +1258,12 @@ model StockTransaction {
   releasedBy String?
   createdBy  String?
 
+  // Confirmation Status (for stock_in transactions created at pickup)
+  status StockTransactionStatus @default(PENDING_CONFIRMATION)
+  confirmedBy String? // User ID who confirmed/rejected
+  confirmedAt DateTime? // When confirmed/rejected
+  rejectionReason String? // Reason if rejected
+
   createdAt DateTime @default(now())
 
   @@index([centerId])
@@ -1254,9 +1271,11 @@ model StockTransaction {
   @@index([type])
   @@index([orderId])
   @@index([createdAt])
+  @@index([status])
   // Analytics indexes - composite indexes for date range queries
   @@index([centerId, createdAt])
   @@index([type, createdAt])
+  @@index([status, createdAt]) // For filtering pending confirmations
   @@map("stock_transactions")
 }
 
@@ -1443,6 +1462,16 @@ model Payment {
   providerRef          String? // External payment provider reference
   transactionReference String? // Alias for providerRef or separate reference
   metadata             Json? // Additional payment data
+
+  // Payment Confirmation (Manual Confirmation Flow)
+  paymentDate      DateTime? // Date payment was made
+  paymentDetails   String? // Optional text notes about payment
+  paymentEvidence  String? // Image URL (receipt, screenshot, proof of payment)
+  confirmedBy      String? // Buyer ID who confirmed the payment
+  confirmedAt      DateTime? // Timestamp when payment was confirmed
+  farmerConfirmedBy String? // Farmer ID who confirmed receipt
+  farmerConfirmedAt DateTime? // Timestamp when farmer confirmed receipt
+  farmerConfirmationNotes String? // Optional notes from farmer about payment receipt
 
   // Timestamps
   initiatedAt   DateTime  @default(now())

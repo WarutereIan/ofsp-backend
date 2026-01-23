@@ -48,4 +48,28 @@ export class UpdateSourcingRequestDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  priceRangeMin?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  priceRangeMax?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  pricePerUnit?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @IsEnum(['kg', 'unit'])
+  priceUnit?: string;
 }

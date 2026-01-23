@@ -78,12 +78,19 @@ export class AuthService {
       throw new BadRequestException('Either email or phone must be provided');
     }
 
-    // Find user by email or phone
+    // Find user by email or phone - build where clause explicitly
+    let whereClause: { email?: string; phone?: string; OR?: Array<{ email?: string } | { phone?: string }> };
+    
+    if (email && phone) {
+      whereClause = { OR: [{ email }, { phone }] };
+    } else if (email) {
+      whereClause = { email };
+    } else {
+      whereClause = { phone };
+    }
+
     const user = await this.prisma.user.findFirst({
-      where: {
-        OR: email ? [{ email }] : [],
-        ...(phone ? [{ phone }] : []),
-      },
+      where: whereClause,
       include: { profile: true },
     });
 
@@ -277,5 +284,22 @@ export class AuthService {
     });
 
     return { message: 'Logged out successfully' };
+  }
+
+  /**
+   * Get user by ID (for /auth/me endpoint)
+   */
+  async getUserById(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { profile: true },
+    });
+
+    if (!user) {
+      return null;
+    }
+
+    const { password: _, ...userWithoutPassword } = user;
+    return userWithoutPassword;
   }
 }

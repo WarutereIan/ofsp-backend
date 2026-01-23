@@ -1,4 +1,12 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Inject,
+  forwardRef,
+  Logger,
+} from '@nestjs/common';
+import { PickupScheduleStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationHelperService } from '../../common/services/notification.service';
 import { ActivityLogService } from '../../common/services/activity-log.service';
@@ -17,6 +25,8 @@ import { generateBatchTraceability } from '../../common/utils/traceability.util'
 
 @Injectable()
 export class TransportService {
+  private readonly logger = new Logger(TransportService.name);
+
   constructor(
     private prisma: PrismaService,
     private notificationHelperService: NotificationHelperService,
@@ -103,47 +113,55 @@ export class TransportService {
   }
 
   async createTransportRequest(data: CreateTransportRequestDto, requesterId: string) {
-    // Generate request number
-    const requestNumber = await this.prisma.$queryRaw<Array<{ generate_transport_request_number: string }>>`
-      SELECT generate_transport_request_number() as generate_transport_request_number
-    `;
+    try {
+      // Generate request number
+      const requestNumber = await this.prisma.$queryRaw<Array<{ generate_transport_request_number: string }>>`
+        SELECT generate_transport_request_number() as generate_transport_request_number
+      `;
 
-    const request = await this.prisma.transportRequest.create({
-      data: {
-        requesterId,
-        requestNumber: requestNumber[0].generate_transport_request_number,
-        type: data.type as any,
-        description: data.description,
-        requesterType: data.requesterType || 'farmer',
-        pickupLocation: data.pickupLocation,
-        pickupCounty: data.pickupCounty,
-        pickupCoords: data.pickupCoordinates,
-        deliveryLocation: data.deliveryLocation,
-        deliveryCounty: data.deliveryCounty,
-        deliveryCoords: data.deliveryCoordinates,
-        distance: data.distance,
-        cargoDescription: data.description || 'Transport request',
-        estimatedWeight: data.weight || 0,
-        scheduledPickup: data.requestedPickupDate ? new Date(data.requestedPickupDate) : null,
-        scheduledDelivery: data.requestedDeliveryDate ? new Date(data.requestedDeliveryDate) : null,
-        orderId: data.orderId,
-        pickupScheduleId: data.pickupScheduleId,
-        pickupSlotId: data.pickupSlotId,
-      },
-      include: {
-        requester: {
-          include: {
-            profile: true,
-          },
+      const request = await this.prisma.transportRequest.create({
+        data: {
+          requesterId,
+          requestNumber: requestNumber[0].generate_transport_request_number,
+          type: data.type as any,
+          description: data.description,
+          requesterType: data.requesterType || 'farmer',
+          pickupLocation: data.pickupLocation,
+          pickupCounty: data.pickupCounty,
+          pickupCoords: data.pickupCoordinates,
+          deliveryLocation: data.deliveryLocation,
+          deliveryCounty: data.deliveryCounty,
+          deliveryCoords: data.deliveryCoordinates,
+          distance: data.distance,
+          cargoDescription: data.description || 'Transport request',
+          estimatedWeight: data.weight || 0,
+          scheduledPickup: data.requestedPickupDate ? new Date(data.requestedPickupDate) : null,
+          scheduledDelivery: data.requestedDeliveryDate ? new Date(data.requestedDeliveryDate) : null,
+          orderId: data.orderId,
+          pickupScheduleId: data.pickupScheduleId,
+          pickupSlotId: data.pickupSlotId,
         },
-        order: true,
-      },
-    });
+        include: {
+          requester: {
+            include: {
+              profile: true,
+            },
+          },
+          order: true,
+        },
+      });
 
-    // Create activity log
-    await this.activityLogService.logTransportCreated(request, requesterId);
+      // Create activity log
+      await this.activityLogService.logTransportCreated(request, requesterId);
 
-    return request;
+      return request;
+    } catch (error) {
+      this.logger.error(
+        `createTransportRequest failed (requesterId=${requesterId}, orderId=${data.orderId ?? 'none'})`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw error;
+    }
   }
 
   async updateTransportRequestStatus(
@@ -184,23 +202,32 @@ export class TransportService {
       updateData.actualDelivery = new Date();
     }
 
-    const updatedRequest = await this.prisma.transportRequest.update({
-      where: { id },
-      data: updateData,
-      include: {
-        requester: {
-          include: {
-            profile: true,
+    let updatedRequest;
+    try {
+      updatedRequest = await this.prisma.transportRequest.update({
+        where: { id },
+        data: updateData,
+        include: {
+          requester: {
+            include: {
+              profile: true,
+            },
           },
-        },
-        provider: {
-          include: {
-            profile: true,
+          provider: {
+            include: {
+              profile: true,
+            },
           },
+          order: true,
         },
-        order: true,
-      },
-    });
+      });
+    } catch (error) {
+      this.logger.error(
+        `updateTransportRequestStatus failed (requestId=${id}, userId=${userId}, newStatus=${newStatus})`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw error;
+    }
 
     // Update marketplace order status if transport is linked to an order
     if (request.orderId && request.type === 'PRODUCE_PICKUP') {
@@ -216,7 +243,10 @@ export class TransportService {
           );
         }
       } catch (error) {
-        console.error('Failed to update order status:', error);
+        this.logger.error(
+          `Failed to update order status (requestId=${id}, orderId=${request.orderId}, newStatus=${newStatus})`,
+          (error as Error)?.stack ?? String(error),
+        );
       }
     }
     
@@ -231,7 +261,10 @@ export class TransportService {
           );
         }
       } catch (error) {
-        console.error('Failed to update order status for PRODUCE_DELIVERY:', error);
+        this.logger.error(
+          `Failed to update order status for PRODUCE_DELIVERY (requestId=${id}, orderId=${request.orderId})`,
+          (error as Error)?.stack ?? String(error),
+        );
         // Don't re-throw - allow transport status to update even if order status update fails
         // This prevents transport delivery from being blocked by order status validation issues
       }
@@ -337,34 +370,45 @@ export class TransportService {
     dateFrom?: string;
     dateTo?: string;
   }) {
-    const where: any = {};
+    try {
+      const where: any = {};
 
-    if (filters?.providerId) {
-      where.providerId = filters.providerId;
-    }
-    if (filters?.centerId) {
-      where.aggregationCenterId = filters.centerId;
-    }
-    if (filters?.status) {
-      where.status = filters.status;
-    }
-    if (filters?.dateFrom || filters?.dateTo) {
-      where.scheduledDate = {};
-      if (filters.dateFrom) {
-        where.scheduledDate.gte = new Date(filters.dateFrom);
+      if (filters?.providerId) {
+        where.providerId = filters.providerId;
       }
-      if (filters.dateTo) {
-        where.scheduledDate.lte = new Date(filters.dateTo);
+      if (filters?.centerId) {
+        where.aggregationCenterId = filters.centerId;
       }
-    }
+      if (filters?.status) {
+        const statusUpper = filters.status.toUpperCase();
+        if (Object.values(PickupScheduleStatus).includes(statusUpper as PickupScheduleStatus)) {
+          where.status = statusUpper;
+        }
+      }
+      if (filters?.dateFrom || filters?.dateTo) {
+        where.scheduledDate = {};
+        if (filters.dateFrom) {
+          where.scheduledDate.gte = new Date(filters.dateFrom);
+        }
+        if (filters.dateTo) {
+          where.scheduledDate.lte = new Date(filters.dateTo);
+        }
+      }
 
-    return this.prisma.farmPickupSchedule.findMany({
-      where,
-      include: {
-        aggregationCenter: true,
-      },
-      orderBy: { scheduledDate: 'asc' },
-    });
+      return await this.prisma.farmPickupSchedule.findMany({
+        where,
+        include: {
+          aggregationCenter: true,
+        },
+        orderBy: { scheduledDate: 'asc' },
+      });
+    } catch (error) {
+      this.logger.error(
+        `getPickupSchedules failed (filters=${JSON.stringify(filters)})`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw error;
+    }
   }
 
   async getPickupScheduleById(id: string) {
@@ -469,7 +513,10 @@ export class TransportService {
         metadata: { scheduleNumber: schedule.scheduleNumber, updatedFields: Object.keys(updateData) },
       });
     } catch (error) {
-      console.error('Failed to create activity log for pickup schedule update:', error);
+      this.logger.error(
+        `Failed to create activity log for pickup schedule update (scheduleId=${id})`,
+        (error as Error)?.stack ?? String(error),
+      );
     }
 
     return updatedSchedule;
@@ -540,7 +587,10 @@ export class TransportService {
       // For now, we'll just log that notifications would be sent
       // TODO: Implement farmer notification system based on subscriptions/preferences
     } catch (error) {
-      console.error('Failed to create notification for pickup schedule publish:', error);
+      this.logger.error(
+        `Failed to create notification for pickup schedule publish (scheduleId=${id})`,
+        (error as Error)?.stack ?? String(error),
+      );
     }
 
     // Create activity log
@@ -557,7 +607,10 @@ export class TransportService {
         },
       });
     } catch (error) {
-      console.error('Failed to create activity log for pickup schedule publish:', error);
+      this.logger.error(
+        `Failed to create activity log for pickup schedule publish (scheduleId=${id})`,
+        (error as Error)?.stack ?? String(error),
+      );
     }
 
     return {
@@ -592,49 +645,58 @@ export class TransportService {
     });
 
     // Cancel schedule and all bookings in a transaction (per lifecycle: all bookings cancelled)
-    const result = await this.prisma.$transaction(async (tx) => {
-      // Update schedule to CANCELLED
-      const updatedSchedule = await tx.farmPickupSchedule.update({
-        where: { id },
-        data: {
-          status: 'CANCELLED',
-        },
-      });
-
-      // Cancel all bookings and release capacity
-      for (const booking of bookings) {
-        // Update booking status
-        await tx.pickupSlotBooking.update({
-          where: { id: booking.id },
+    let result;
+    try {
+      result = await this.prisma.$transaction(async (tx) => {
+        // Update schedule to CANCELLED
+        const updatedSchedule = await tx.farmPickupSchedule.update({
+          where: { id },
           data: {
-            status: 'cancelled',
-            cancelledAt: new Date(),
+            status: 'CANCELLED',
           },
         });
 
-        // Release slot capacity
-        await tx.pickupSlot.update({
-          where: { id: booking.slotId },
+        // Cancel all bookings and release capacity
+        for (const booking of bookings) {
+          // Update booking status
+          await tx.pickupSlotBooking.update({
+            where: { id: booking.id },
+            data: {
+              status: 'cancelled',
+              cancelledAt: new Date(),
+            },
+          });
+
+          // Release slot capacity
+          await tx.pickupSlot.update({
+            where: { id: booking.slotId },
+            data: {
+              usedCapacity: { decrement: booking.quantity },
+              availableCapacity: { increment: booking.quantity },
+              status: 'AVAILABLE', // Reset to available
+            },
+          });
+        }
+
+        // Release schedule capacity
+        const totalBookedQuantity = bookings.reduce((sum, b) => sum + b.quantity, 0);
+        await tx.farmPickupSchedule.update({
+          where: { id },
           data: {
-            usedCapacity: { decrement: booking.quantity },
-            availableCapacity: { increment: booking.quantity },
-            status: 'AVAILABLE', // Reset to available
+            usedCapacity: { decrement: totalBookedQuantity },
+            availableCapacity: { increment: totalBookedQuantity },
           },
         });
-      }
 
-      // Release schedule capacity
-      const totalBookedQuantity = bookings.reduce((sum, b) => sum + b.quantity, 0);
-      await tx.farmPickupSchedule.update({
-        where: { id },
-        data: {
-          usedCapacity: { decrement: totalBookedQuantity },
-          availableCapacity: { increment: totalBookedQuantity },
-        },
+        return { schedule: updatedSchedule, cancelledBookings: bookings.length };
       });
-
-      return { schedule: updatedSchedule, cancelledBookings: bookings.length };
-    });
+    } catch (error) {
+      this.logger.error(
+        `cancelPickupSchedule failed (scheduleId=${id}, providerId=${providerId})`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw error;
+    }
 
     // Create notifications (per lifecycle: provider + all farmers with bookings)
     try {
@@ -669,7 +731,10 @@ export class TransportService {
         })),
       );
     } catch (error) {
-      console.error('Failed to create notifications for pickup schedule cancellation:', error);
+      this.logger.error(
+        `Failed to create notifications for pickup schedule cancellation (scheduleId=${id})`,
+        (error as Error)?.stack ?? String(error),
+      );
     }
 
     // Create activity log
@@ -686,7 +751,10 @@ export class TransportService {
         },
       });
     } catch (error) {
-      console.error('Failed to create activity log for pickup schedule cancellation:', error);
+      this.logger.error(
+        `Failed to create activity log for pickup schedule cancellation (scheduleId=${id})`,
+        (error as Error)?.stack ?? String(error),
+      );
     }
 
     return result.schedule;
@@ -739,77 +807,105 @@ export class TransportService {
     });
   }
 
-  async bookPickupSlot(slotId: string, data: BookPickupSlotDto, farmerId: string) {
-    const slot = await this.prisma.pickupSlot.findUnique({
-      where: { id: slotId },
-      include: {
-        bookings: true,
-        schedule: true,
-      },
-    });
+  async bookPickupSlot(scheduleId: string, data: BookPickupSlotDto, farmerId: string) {
+    // Get the schedule
+    const schedule = await this.getPickupScheduleById(scheduleId);
 
-    if (!slot) {
-      throw new NotFoundException(`Pickup Slot with ID ${slotId} not found`);
-    }
-
-    // Check slot capacity
-    const totalBooked = slot.bookings.reduce((sum, b) => sum + b.quantity, 0);
-    if (totalBooked + data.quantity > slot.capacity) {
-      throw new BadRequestException('Insufficient capacity in this slot');
+    // Check if schedule is published and has capacity
+    if (schedule.status !== 'PUBLISHED' && schedule.status !== 'ACTIVE') {
+      throw new BadRequestException('Can only book slots in published or active schedules');
     }
 
     // Check schedule capacity
-    if (slot.schedule.usedCapacity + data.quantity > slot.schedule.totalCapacity) {
+    if (schedule.usedCapacity + data.quantity > schedule.totalCapacity) {
       throw new BadRequestException('Insufficient capacity in schedule');
     }
 
-    // Create booking and update capacities in a transaction
-    const booking = await this.prisma.$transaction(async (tx) => {
-      // Create booking
-      const newBooking = await tx.pickupSlotBooking.create({
-        data: {
-          slotId,
-          scheduleId: slot.scheduleId,
-          farmerId,
-          quantity: data.quantity,
-          location: data.location,
-          coordinates: data.coordinates,
-          contactPhone: data.contactPhone,
-          notes: data.notes,
-          variety: data.variety,
-          qualityGrade: data.qualityGrade as any,
-          photos: data.photos || [],
-        },
-      });
+    // Create slot and booking in a transaction
+    let booking;
+    try {
+      booking = await this.prisma.$transaction(async (tx) => {
+        // Create a new slot for this booking
+        // Use the schedule's scheduled date/time as the slot time window
+        const scheduledDateTime = new Date(schedule.scheduledDate);
+        const [hours, minutes] = schedule.scheduledTime.split(':').map(Number);
+        scheduledDateTime.setHours(hours || 0, minutes || 0, 0, 0);
+        
+        // Default slot duration: 2 hours
+        const slotEndTime = new Date(scheduledDateTime);
+        slotEndTime.setHours(slotEndTime.getHours() + 2);
 
-      // Update slot capacity
-      await tx.pickupSlot.update({
-        where: { id: slotId },
-        data: {
-          usedCapacity: { increment: data.quantity },
-          availableCapacity: { decrement: data.quantity },
-          status: slot.capacity - totalBooked - data.quantity <= 0 ? 'FULL' : 'BOOKED',
-        },
-      });
+        // Use first pickup location if available, otherwise null
+        const pickupLocations = await tx.pickupLocation.findMany({
+          where: { scheduleId },
+          orderBy: { order: 'asc' },
+          take: 1,
+        });
+        const firstLocation = pickupLocations.length > 0 ? pickupLocations[0].id : null;
 
-      // Update schedule capacity
-      await tx.farmPickupSchedule.update({
-        where: { id: slot.scheduleId },
-        data: {
-          usedCapacity: { increment: data.quantity },
-          availableCapacity: { decrement: data.quantity },
-        },
-      });
+        // Create the slot with capacity matching the booking quantity
+        // Each booking gets its own slot, so the slot capacity equals the booking quantity
+        const slotCapacity = data.quantity;
+        
+        const newSlot = await tx.pickupSlot.create({
+          data: {
+            scheduleId,
+            locationId: firstLocation,
+            startTime: scheduledDateTime,
+            endTime: slotEndTime,
+            capacity: slotCapacity,
+            availableCapacity: 0, // Fully booked by this booking
+            usedCapacity: data.quantity,
+            status: 'FULL', // Slot is full since it's created for this specific booking
+          },
+        });
 
-      return newBooking;
-    });
+        // Create booking
+        const newBooking = await tx.pickupSlotBooking.create({
+          data: {
+            slotId: newSlot.id,
+            scheduleId,
+            farmerId,
+            quantity: data.quantity,
+            location: data.location,
+            coordinates: data.coordinates,
+            contactPhone: data.contactPhone,
+            notes: data.notes,
+            variety: data.variety,
+            qualityGrade: data.qualityGrade as any,
+            photos: data.photos || [],
+          },
+        });
+
+        // Update schedule capacity
+        await tx.farmPickupSchedule.update({
+          where: { id: scheduleId },
+          data: {
+            usedCapacity: { increment: data.quantity },
+            availableCapacity: { decrement: data.quantity },
+          },
+        });
+
+        return newBooking;
+      });
+    } catch (error) {
+      this.logger.error(
+        `bookPickupSlot failed (scheduleId=${scheduleId}, farmerId=${farmerId}, quantity=${data.quantity})`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw error;
+    }
 
     return this.prisma.pickupSlotBooking.findUnique({
       where: { id: booking.id },
       include: {
         slot: {
           include: {
-            schedule: true,
+            schedule: {
+              include: {
+                aggregationCenter: true,
+              },
+            },
           },
         },
       },
@@ -904,7 +1000,10 @@ export class TransportService {
         },
       ]);
     } catch (error) {
-      console.error('Failed to create notifications for booking cancellation:', error);
+      this.logger.error(
+        `Failed to create notifications for booking cancellation (bookingId=${bookingId})`,
+        (error as Error)?.stack ?? String(error),
+      );
     }
 
     // Create activity log
@@ -917,98 +1016,24 @@ export class TransportService {
         metadata: { scheduleId: booking.scheduleId, quantity: booking.quantity },
       });
     } catch (error) {
-      console.error('Failed to create activity log for booking cancellation:', error);
+      this.logger.error(
+        `Failed to create activity log for booking cancellation (bookingId=${bookingId})`,
+        (error as Error)?.stack ?? String(error),
+      );
     }
 
     return cancelledBooking;
   }
 
   async confirmPickup(bookingId: string, data: ConfirmPickupDto, farmerId: string) {
-    const booking = await this.prisma.pickupSlotBooking.findUnique({
-      where: { id: bookingId },
-      include: {
-        slot: {
-          include: {
-            schedule: {
-              include: {
-                aggregationCenter: true,
-              },
-            },
-          },
-        },
-      },
-    });
+    this.logger.log(
+      `confirmPickup called: bookingId=${bookingId}, farmerId=${farmerId}, variety=${data.variety}, qualityGrade=${data.qualityGrade}`,
+    );
 
-    if (!booking) {
-      throw new NotFoundException(`Pickup slot booking with ID ${bookingId} not found`);
-    }
-
-    // Validate ownership
-    if (booking.farmerId !== farmerId) {
-      throw new BadRequestException('You can only confirm your own pickups');
-    }
-
-    // Cannot confirm if already confirmed or cancelled
-    if (booking.pickupConfirmed) {
-      throw new BadRequestException('Pickup already confirmed');
-    }
-    if (booking.status === 'cancelled') {
-      throw new BadRequestException('Cannot confirm cancelled booking');
-    }
-
-    // Generate batch ID and QR code (per lifecycle: batch traceability starts)
-    const { batchId: generatedBatchId, qrCode: generatedQRCode } = generateBatchTraceability();
-    const batchId = data.batchId || generatedBatchId;
-    // QR code should be based on the actual batchId used
-    const qrCode = data.batchId ? `QR-${data.batchId}` : generatedQRCode;
-
-    // Generate receipt number
-    const receiptNumber = await this.prisma.$queryRaw<Array<{ generate_pickup_receipt_number: string }>>`
-      SELECT generate_pickup_receipt_number() as generate_pickup_receipt_number
-    `;
-
-    // Create receipt and update booking in a transaction (per lifecycle: receipt + batch created)
-    const result = await this.prisma.$transaction(async (tx) => {
-      // Create pickup receipt
-      const receipt = await tx.pickupReceipt.create({
-        data: {
-          receiptNumber: receiptNumber[0].generate_pickup_receipt_number,
-          bookingId,
-          scheduleId: booking.scheduleId,
-          farmerId: booking.farmerId,
-          providerId: booking.slot.schedule.providerId,
-          aggregationCenterId: booking.slot.schedule.aggregationCenterId,
-          batchId,
-          qrCode,
-          quantity: booking.quantity,
-          variety: data.variety as any,
-          qualityGrade: data.qualityGrade as any,
-          pickupLocation: booking.location,
-          pickupDate: new Date(),
-          pickupTime: new Date().toTimeString().slice(0, 5), // HH:mm format
-          scheduledDeliveryDate: booking.slot.schedule.scheduledDate,
-          photos: data.photos || [],
-          notes: data.notes,
-          createdBy: farmerId,
-        },
-      });
-
-      // Update booking with confirmation data
-      const updatedBooking = await tx.pickupSlotBooking.update({
+    let booking;
+    try {
+      booking = await this.prisma.pickupSlotBooking.findUnique({
         where: { id: bookingId },
-        data: {
-          batchId,
-          qrCode,
-          pickupConfirmed: true,
-          pickupConfirmedAt: new Date(),
-          pickupConfirmedBy: farmerId,
-          pickupReceiptId: receipt.id,
-          variety: data.variety,
-          qualityGrade: data.qualityGrade as any,
-          photos: data.photos || [],
-          notes: data.notes,
-          status: 'picked_up',
-        },
         include: {
           slot: {
             include: {
@@ -1019,16 +1044,248 @@ export class TransportService {
               },
             },
           },
-          pickupReceipt: true,
         },
       });
+    } catch (error) {
+      this.logger.error(
+        `Failed to fetch booking for pickup confirmation: bookingId=${bookingId}, farmerId=${farmerId}`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw new BadRequestException(`Failed to fetch booking: ${(error as Error)?.message ?? String(error)}`);
+    }
 
-      return { booking: updatedBooking, receipt };
-    });
+    if (!booking) {
+      this.logger.warn(
+        `Pickup booking not found: bookingId=${bookingId}, farmerId=${farmerId}`,
+      );
+      throw new NotFoundException(`Pickup slot booking with ID ${bookingId} not found`);
+    }
+
+    // Validate ownership
+    if (booking.farmerId !== farmerId) {
+      this.logger.warn(
+        `Unauthorized pickup confirmation attempt: bookingId=${bookingId}, bookingFarmerId=${booking.farmerId}, requestingFarmerId=${farmerId}`,
+      );
+      throw new BadRequestException('You can only confirm your own pickups');
+    }
+
+    // Cannot confirm if already confirmed or cancelled
+    if (booking.pickupConfirmed) {
+      this.logger.warn(
+        `Attempt to confirm already confirmed pickup: bookingId=${bookingId}, farmerId=${farmerId}, confirmedAt=${booking.pickupConfirmedAt}`,
+      );
+      throw new BadRequestException('Pickup already confirmed');
+    }
+    if (booking.status === 'cancelled') {
+      this.logger.warn(
+        `Attempt to confirm cancelled booking: bookingId=${bookingId}, farmerId=${farmerId}, status=${booking.status}`,
+      );
+      throw new BadRequestException('Cannot confirm cancelled booking');
+    }
+
+    // Generate batch ID and QR code (per lifecycle: batch traceability starts)
+    let batchId: string;
+    let qrCode: string;
+    try {
+      const { batchId: generatedBatchId, qrCode: generatedQRCode } = generateBatchTraceability();
+      batchId = data.batchId || generatedBatchId;
+      // QR code should be based on the actual batchId used
+      qrCode = data.batchId ? `QR-${data.batchId}` : generatedQRCode;
+      this.logger.debug(
+        `Batch traceability generated: bookingId=${bookingId}, batchId=${batchId}, qrCode=${qrCode}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to generate batch traceability: bookingId=${bookingId}, farmerId=${farmerId}`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw new BadRequestException(`Failed to generate batch ID: ${(error as Error)?.message ?? String(error)}`);
+    }
+
+    // Generate receipt number
+    let receiptNumber: Array<{ generate_pickup_receipt_number: string }>;
+    try {
+      receiptNumber = await this.prisma.$queryRaw<Array<{ generate_pickup_receipt_number: string }>>`
+        SELECT generate_pickup_receipt_number() as generate_pickup_receipt_number
+      `;
+      this.logger.debug(
+        `Receipt number generated: bookingId=${bookingId}, receiptNumber=${receiptNumber[0]?.generate_pickup_receipt_number}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to generate receipt number: bookingId=${bookingId}, farmerId=${farmerId}`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw new BadRequestException(`Failed to generate receipt number: ${(error as Error)?.message ?? String(error)}`);
+    }
+
+    // Create receipt and update booking in a transaction (per lifecycle: receipt + batch created)
+    let result;
+    try {
+      this.logger.debug(
+        `Starting transaction for pickup confirmation: bookingId=${bookingId}, batchId=${batchId}, receiptNumber=${receiptNumber[0]?.generate_pickup_receipt_number}`,
+      );
+      result = await this.prisma.$transaction(async (tx) => {
+        // Create pickup receipt
+        let receipt;
+        try {
+          receipt = await tx.pickupReceipt.create({
+            data: {
+              receiptNumber: receiptNumber[0].generate_pickup_receipt_number,
+              bookingId,
+              scheduleId: booking.scheduleId,
+              farmerId: booking.farmerId,
+              providerId: booking.slot.schedule.providerId,
+              aggregationCenterId: booking.slot.schedule.aggregationCenterId,
+              batchId,
+              qrCode,
+              quantity: booking.quantity,
+              variety: data.variety as any,
+              qualityGrade: data.qualityGrade as any,
+              pickupLocation: booking.location,
+              pickupDate: new Date(),
+              pickupTime: new Date().toTimeString().slice(0, 5), // HH:mm format
+              scheduledDeliveryDate: booking.slot.schedule.scheduledDate,
+              photos: data.photos || [],
+              notes: data.notes,
+              createdBy: farmerId,
+            },
+          });
+          this.logger.debug(
+            `Pickup receipt created: receiptId=${receipt.id}, bookingId=${bookingId}, batchId=${batchId}`,
+          );
+        } catch (error) {
+          this.logger.error(
+            `Failed to create pickup receipt in transaction: bookingId=${bookingId}, batchId=${batchId}, providerId=${booking.slot.schedule.providerId}, aggregationCenterId=${booking.slot.schedule.aggregationCenterId}`,
+            (error as Error)?.stack ?? String(error),
+          );
+          throw error;
+        }
+
+        // Create stock transaction with PENDING_CONFIRMATION status
+        // This starts the stock/inventory lifecycle at pickup confirmation
+        let stockTransaction;
+        try {
+          // Generate transaction number
+          const transactionNumber = await tx.$queryRaw<Array<{ generate_stock_transaction_number: string }>>`
+            SELECT generate_stock_transaction_number() as generate_stock_transaction_number
+          `;
+
+          // Get farmer name from profile
+          const farmerProfile = await tx.profile.findUnique({
+            where: { userId: booking.farmerId },
+            select: { firstName: true, lastName: true },
+          });
+          const farmerName = farmerProfile 
+            ? `${farmerProfile.firstName} ${farmerProfile.lastName}`
+            : undefined;
+
+          stockTransaction = await tx.stockTransaction.create({
+            data: {
+              transactionNumber: transactionNumber[0].generate_stock_transaction_number,
+              centerId: booking.slot.schedule.aggregationCenterId,
+              centerName: booking.slot.schedule.aggregationCenter.name,
+              type: 'STOCK_IN',
+              variety: data.variety,
+              quantity: booking.quantity,
+              qualityGrade: data.qualityGrade as any,
+              farmerId: booking.farmerId,
+              farmerName: farmerName,
+              batchId: batchId,
+              qrCode: qrCode,
+              photos: data.photos || [],
+              notes: data.notes || `Created from pickup confirmation. Booking ID: ${bookingId}`,
+              status: 'PENDING_CONFIRMATION', // Awaiting aggregation center confirmation
+              createdBy: farmerId,
+            },
+          });
+          this.logger.debug(
+            `Stock transaction created: transactionId=${stockTransaction.id}, batchId=${batchId}, status=PENDING_CONFIRMATION`,
+          );
+        } catch (error) {
+          this.logger.error(
+            `Failed to create stock transaction in transaction: bookingId=${bookingId}, batchId=${batchId}, centerId=${booking.slot.schedule.aggregationCenterId}`,
+            (error as Error)?.stack ?? String(error),
+          );
+          throw error;
+        }
+
+        // Update booking with confirmation data
+        let updatedBooking;
+        try {
+          updatedBooking = await tx.pickupSlotBooking.update({
+            where: { id: bookingId },
+            data: {
+              batchId,
+              qrCode,
+              pickupConfirmed: true,
+              pickupConfirmedAt: new Date(),
+              pickupConfirmedBy: farmerId,
+              pickupReceiptId: receipt.id,
+              variety: data.variety,
+              qualityGrade: data.qualityGrade as any,
+              photos: data.photos || [],
+              notes: data.notes,
+              status: 'picked_up',
+            },
+            include: {
+              slot: {
+                include: {
+                  schedule: {
+                    include: {
+                      aggregationCenter: true,
+                      provider: {
+                        include: {
+                          profile: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+              pickupReceipt: {
+                include: {
+                  aggregationCenter: true,
+                },
+              },
+              farmer: {
+                include: {
+                  profile: true,
+                },
+              },
+            },
+          });
+          this.logger.debug(
+            `Booking updated with confirmation: bookingId=${bookingId}, receiptId=${receipt.id}`,
+          );
+        } catch (error) {
+          this.logger.error(
+            `Failed to update booking in transaction: bookingId=${bookingId}, receiptId=${receipt.id}`,
+            (error as Error)?.stack ?? String(error),
+          );
+          throw error;
+        }
+
+        return { booking: updatedBooking, receipt, stockTransaction };
+      });
+      this.logger.log(
+        `Pickup confirmation transaction completed successfully: bookingId=${bookingId}, batchId=${batchId}, receiptId=${result.receipt.id}, receiptNumber=${receiptNumber[0]?.generate_pickup_receipt_number}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `confirmPickup transaction failed: bookingId=${bookingId}, farmerId=${farmerId}, batchId=${batchId}, receiptNumber=${receiptNumber[0]?.generate_pickup_receipt_number}, error=${(error as Error)?.message ?? String(error)}`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw error;
+    }
 
     // Create notifications (per lifecycle: farmer + provider + aggregation center manager)
     try {
       const centerManagerId = booking.slot.schedule.aggregationCenter.managerId;
+      const notificationCount = centerManagerId ? 3 : 2;
+      this.logger.debug(
+        `Creating ${notificationCount} notifications for pickup confirmation: bookingId=${bookingId}, farmerId=${farmerId}, providerId=${booking.slot.schedule.providerId}, centerManagerId=${centerManagerId || 'none'}`,
+      );
       await this.notificationHelperService.createNotifications([
         {
           userId: farmerId,
@@ -1067,12 +1324,22 @@ export class TransportService {
           metadata: { batchId, scheduleId: booking.scheduleId },
         }] : []),
       ]);
+      this.logger.debug(
+        `Notifications created successfully: bookingId=${bookingId}, notificationCount=${notificationCount}`,
+      );
     } catch (error) {
-      console.error('Failed to create notifications for pickup confirmation:', error);
+      this.logger.error(
+        `Failed to create notifications for pickup confirmation: bookingId=${bookingId}, farmerId=${farmerId}, providerId=${booking.slot.schedule.providerId}, batchId=${batchId}`,
+        (error as Error)?.stack ?? String(error),
+      );
+      // Don't throw - notifications are non-critical
     }
 
     // Create activity log
     try {
+      this.logger.debug(
+        `Creating activity log for pickup confirmation: bookingId=${bookingId}, farmerId=${farmerId}`,
+      );
       await this.activityLogService.createActivityLog({
         userId: farmerId,
         action: 'PICKUP_CONFIRMED',
@@ -1085,9 +1352,20 @@ export class TransportService {
           quantity: booking.quantity,
         },
       });
+      this.logger.debug(
+        `Activity log created successfully: bookingId=${bookingId}`,
+      );
     } catch (error) {
-      console.error('Failed to create activity log for pickup confirmation:', error);
+      this.logger.error(
+        `Failed to create activity log for pickup confirmation: bookingId=${bookingId}, farmerId=${farmerId}, batchId=${batchId}`,
+        (error as Error)?.stack ?? String(error),
+      );
+      // Don't throw - activity logs are non-critical
     }
+
+    this.logger.log(
+      `Pickup confirmation completed successfully: bookingId=${bookingId}, farmerId=${farmerId}, batchId=${batchId}, receiptId=${result.receipt.id}, receiptNumber=${receiptNumber[0]?.generate_pickup_receipt_number}`,
+    );
 
     return result.booking;
   }
@@ -1198,32 +1476,40 @@ export class TransportService {
       throw new BadRequestException('Only the transport provider can add tracking updates');
     }
 
-    const trackingUpdate = await this.prisma.trackingUpdate.create({
-      data: {
-        requestId: requestId,
-        location: data.location,
-        coordinates: data.coordinates,
-        status: data.status,
-        notes: data.notes,
-        updatedBy: userId,
-      },
-    });
+    try {
+      const trackingUpdate = await this.prisma.trackingUpdate.create({
+        data: {
+          requestId: requestId,
+          location: data.location,
+          coordinates: data.coordinates,
+          status: data.status,
+          notes: data.notes,
+          updatedBy: userId,
+        },
+      });
 
-    // Create activity log
-    await this.activityLogService.createActivityLog({
-      userId,
-      action: 'TRANSPORT_TRACKING_UPDATE',
-      entityType: 'TRANSPORT',
-      entityId: requestId,
-      metadata: {
-        requestNumber: request.requestNumber,
-        location: data.location,
-        status: data.status,
-        trackingUpdateId: trackingUpdate.id,
-      },
-    });
+      // Create activity log
+      await this.activityLogService.createActivityLog({
+        userId,
+        action: 'TRANSPORT_TRACKING_UPDATE',
+        entityType: 'TRANSPORT',
+        entityId: requestId,
+        metadata: {
+          requestNumber: request.requestNumber,
+          location: data.location,
+          status: data.status,
+          trackingUpdateId: trackingUpdate.id,
+        },
+      });
 
-    return trackingUpdate;
+      return trackingUpdate;
+    } catch (error) {
+      this.logger.error(
+        `addTrackingUpdate failed (requestId=${requestId}, userId=${userId})`,
+        (error as Error)?.stack ?? String(error),
+      );
+      throw error;
+    }
   }
 
   // ============ Active Deliveries ============

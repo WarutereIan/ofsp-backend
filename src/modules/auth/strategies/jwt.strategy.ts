@@ -2,7 +2,25 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
+import { Request } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
+
+/**
+ * Extract JWT from HttpOnly cookie first, then fall back to Authorization header.
+ * This supports both cookie-based auth (frontend) and Bearer token (Swagger/API testing).
+ */
+function extractJwtFromCookieOrHeader(req: Request): string | null {
+  // Try cookie first (HttpOnly cookie set by auth endpoints)
+  if (req.cookies?.access_token) {
+    return req.cookies.access_token;
+  }
+  // Fall back to Authorization header (for Swagger, mobile apps, etc.)
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) {
+    return authHeader.slice(7);
+  }
+  return null;
+}
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -15,7 +33,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new Error('JWT_SECRET is not defined');
     }
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: extractJwtFromCookieOrHeader,
       ignoreExpiration: false,
       secretOrKey: secret,
     });

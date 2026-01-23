@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { NotificationHelperService } from '../../common/services/notification.service';
 import { ActivityLogService } from '../../common/services/activity-log.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
@@ -127,6 +128,8 @@ export class AggregationService {
     variety?: string;
     dateFrom?: string;
     dateTo?: string;
+    batchId?: string;
+    status?: string;
   }) {
     const where: any = {};
 
@@ -138,6 +141,12 @@ export class AggregationService {
     }
     if (filters?.variety) {
       where.variety = filters.variety;
+    }
+    if (filters?.batchId) {
+      where.batchId = { contains: filters.batchId, mode: 'insensitive' };
+    }
+    if (filters?.status) {
+      where.status = filters.status;
     }
     if (filters?.dateFrom || filters?.dateTo) {
       where.createdAt = {};
@@ -162,6 +171,286 @@ export class AggregationService {
       },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /**
+   * Search for batches using PostgreSQL full-text search
+   * Uses tsvector and tsquery for efficient text search
+   */
+  async searchBatches(query: string, limit: number = 10) {
+    if (!query || query.trim().length < 2) {
+      return [];
+    }
+
+    // Sanitize query for PostgreSQL full-text search
+    // Replace special characters and prepare for tsquery
+    const sanitizedQuery = query.trim().replace(/[^\w\s-]/g, ' ').replace(/\s+/g, ' & ');
+    const likeQuery = `%${query.trim()}%`;
+    
+    // Use PostgreSQL full-text search with ranking
+    // Using Prisma.sql for proper parameterization to prevent SQL injection
+    const results = await this.prisma.$queryRaw<Array<{
+      id: string;
+      batchId: string | null;
+      qrCode: string | null;
+      variety: string;
+      quantity: number;
+      qualityGrade: string;
+      farmerId: string | null;
+      farmerName: string | null;
+      centerId: string;
+      centerName: string | null;
+      createdAt: Date;
+      type: string;
+      transactionNumber: string;
+      rank: number;
+    }>>(
+      Prisma.sql`
+        SELECT 
+          st.id,
+          st."batchId",
+          st."qrCode",
+          st.variety,
+          st.quantity,
+          st."qualityGrade",
+          st."farmerId",
+          st."farmerName",
+          st."centerId",
+          st."centerName",
+          st."createdAt",
+          st.type,
+          st."transactionNumber",
+          ts_rank(
+            to_tsvector('simple', COALESCE(st."batchId", '') || ' ' || COALESCE(st."qrCode", '')),
+            plainto_tsquery('simple', ${sanitizedQuery})
+          ) as rank
+        FROM stock_transactions st
+        WHERE 
+          st."batchId" IS NOT NULL
+          AND (
+            to_tsvector('simple', COALESCE(st."batchId", '') || ' ' || COALESCE(st."qrCode", '')) 
+            @@ plainto_tsquery('simple', ${sanitizedQuery})
+            OR st."batchId" ILIKE ${likeQuery}
+          )
+        ORDER BY 
+          rank DESC,
+          st."createdAt" DESC
+        LIMIT ${limit}
+      `
+    );
+
+    // Fetch full transaction details with relations
+    if (results.length === 0) {
+      return [];
+    }
+
+    const transactionIds = results.map((r) => r.id);
+    const transactions = await this.prisma.stockTransaction.findMany({
+      where: {
+        id: { in: transactionIds },
+      },
+      include: {
+        center: true,
+        order: true,
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Map results to maintain ranking order
+    const transactionMap = new Map(transactions.map((t) => [t.id, t]));
+    return results
+      .map((r) => transactionMap.get(r.id))
+      .filter((t): t is NonNullable<typeof t> => t !== undefined);
+  }
+
+  /**
+   * Confirm a pending stock transaction
+   * Changes status from PENDING_CONFIRMATION to CONFIRMED
+   * Creates inventory item when confirmed
+   */
+  async confirmStockTransaction(transactionId: string, userId: string) {
+    const transaction = await this.prisma.stockTransaction.findUnique({
+      where: { id: transactionId },
+      include: {
+        center: true,
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    if (!transaction) {
+      throw new NotFoundException(`Stock transaction with ID ${transactionId} not found`);
+    }
+
+    if (transaction.status !== 'PENDING_CONFIRMATION') {
+      throw new BadRequestException(
+        `Transaction is not pending confirmation. Current status: ${transaction.status}`,
+      );
+    }
+
+    if (transaction.type !== 'STOCK_IN') {
+      throw new BadRequestException('Only STOCK_IN transactions can be confirmed');
+    }
+
+    // Update transaction status to CONFIRMED
+    const updatedTransaction = await this.prisma.stockTransaction.update({
+      where: { id: transactionId },
+      data: {
+        status: 'CONFIRMED',
+        confirmedBy: userId,
+        confirmedAt: new Date(),
+      },
+      include: {
+        center: true,
+        order: true,
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    // Create inventory item now that transaction is confirmed
+    if (updatedTransaction.batchId) {
+      try {
+        const existingInventory = await this.prisma.inventoryItem.findUnique({
+          where: { batchId: updatedTransaction.batchId },
+        });
+
+        if (!existingInventory) {
+          await this.prisma.inventoryItem.create({
+            data: {
+              centerId: updatedTransaction.centerId,
+              variety: updatedTransaction.variety,
+              quantity: updatedTransaction.quantity,
+              qualityGrade: updatedTransaction.qualityGrade as any,
+              batchId: updatedTransaction.batchId,
+              stockInDate: new Date(),
+              farmerId: updatedTransaction.farmerId || undefined,
+              farmerName: updatedTransaction.farmerName || undefined,
+              stockTransactionId: updatedTransaction.id,
+            },
+          });
+        } else {
+          // Update existing inventory if batch already exists
+          await this.prisma.inventoryItem.update({
+            where: { id: existingInventory.id },
+            data: {
+              quantity: existingInventory.quantity + updatedTransaction.quantity,
+            },
+          });
+        }
+      } catch (error) {
+        console.error('Failed to create inventory item:', error);
+        // Don't fail the transaction if inventory creation fails
+      }
+    }
+
+    // Create activity log
+    await this.activityLogService.createActivityLog({
+      userId,
+      action: 'STOCK_TRANSACTION_CONFIRMED',
+      entityType: 'STOCK_TRANSACTION',
+      entityId: transactionId,
+      metadata: {
+        transactionNumber: updatedTransaction.transactionNumber,
+        batchId: updatedTransaction.batchId,
+        quantity: updatedTransaction.quantity,
+      },
+    });
+
+    return updatedTransaction;
+  }
+
+  /**
+   * Reject a pending stock transaction
+   * Changes status from PENDING_CONFIRMATION to REJECTED
+   */
+  async rejectStockTransaction(
+    transactionId: string,
+    userId: string,
+    reason: string,
+  ) {
+    const transaction = await this.prisma.stockTransaction.findUnique({
+      where: { id: transactionId },
+    });
+
+    if (!transaction) {
+      throw new NotFoundException(`Stock transaction with ID ${transactionId} not found`);
+    }
+
+    if (transaction.status !== 'PENDING_CONFIRMATION') {
+      throw new BadRequestException(
+        `Transaction is not pending confirmation. Current status: ${transaction.status}`,
+      );
+    }
+
+    // Update transaction status to REJECTED
+    const updatedTransaction = await this.prisma.stockTransaction.update({
+      where: { id: transactionId },
+      data: {
+        status: 'REJECTED',
+        confirmedBy: userId,
+        confirmedAt: new Date(),
+        rejectionReason: reason,
+      },
+      include: {
+        center: true,
+        order: true,
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    // Create activity log
+    await this.activityLogService.createActivityLog({
+      userId,
+      action: 'STOCK_TRANSACTION_REJECTED',
+      entityType: 'STOCK_TRANSACTION',
+      entityId: transactionId,
+      metadata: {
+        transactionNumber: updatedTransaction.transactionNumber,
+        batchId: updatedTransaction.batchId,
+        rejectionReason: reason,
+      },
+    });
+
+    // Notify farmer if transaction is rejected
+    if (updatedTransaction.farmerId) {
+      try {
+        await this.notificationHelperService.createNotification({
+          userId: updatedTransaction.farmerId,
+          type: 'STOCK_TRANSACTION',
+          title: 'Stock Transaction Rejected',
+          message: `Your stock transaction (Batch: ${updatedTransaction.batchId}) was rejected. Reason: ${reason}`,
+          priority: 'HIGH',
+          entityType: 'STOCK_TRANSACTION',
+          entityId: transactionId,
+          actionUrl: `/stock-transactions/${transactionId}`,
+          actionLabel: 'View Transaction',
+          metadata: {
+            batchId: updatedTransaction.batchId,
+            rejectionReason: reason,
+          },
+        });
+      } catch (error) {
+        console.error('Failed to create rejection notification:', error);
+      }
+    }
+
+    return updatedTransaction;
   }
 
   async createStockIn(data: CreateStockTransactionDto, userId: string) {
@@ -264,8 +553,40 @@ export class AggregationService {
       }
     }
 
+    // If batchId is provided, look up existing batch info to populate farmer info if not provided
+    if (data.batchId && !farmerId) {
+      const existingBatchTransaction = await this.prisma.stockTransaction.findFirst({
+        where: { batchId: data.batchId },
+        select: { farmerId: true, farmerName: true, variety: true },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existingBatchTransaction?.farmerId) {
+        farmerId = existingBatchTransaction.farmerId;
+        farmerName = existingBatchTransaction.farmerName || undefined;
+      }
+    }
+
+    // Generate batchId if not provided
+    let batchId = data.batchId;
+    if (!batchId) {
+      const timestamp = Date.now();
+      const random = Math.floor(Math.random() * 1000);
+      batchId = `BATCH-${timestamp}-${random}`;
+    }
+
+    // Generate QR code if batchId exists and qrCode not provided
+    let qrCode = data.qrCode;
+    if (batchId && !qrCode) {
+      qrCode = `QR-${batchId}`;
+    }
+
     // Determine transaction type: TRANSFER if from satellite, STOCK_IN otherwise
     const transactionType = isTransferFromSatellite ? 'TRANSFER' : 'STOCK_IN';
+    
+    // Set status: CONFIRMED for manual stock-in, PENDING_CONFIRMATION if created from pickup
+    // If batchId exists and was created from pickup, it should already have PENDING_CONFIRMATION status
+    // For manual stock-in at center, set to CONFIRMED
+    const transactionStatus = 'CONFIRMED'; // Manual stock-in is always confirmed immediately
 
     const stockTransaction = await this.prisma.stockTransaction.create({
       data: {
@@ -280,8 +601,9 @@ export class AggregationService {
         orderId: data.orderId,
         farmerId,
         farmerName,
-        batchId: data.batchId,
-        qrCode: data.qrCode,
+        batchId: batchId,
+        qrCode: qrCode,
+        status: transactionStatus,
         notes: isTransferFromSatellite
           ? `Transfer from ${sourceCenter?.name || 'satellite center'}${data.transferTransactionId ? ` (Transaction: ${data.transferTransactionId})` : ''}. ${data.notes || ''}`.trim()
           : data.notes,
@@ -299,12 +621,13 @@ export class AggregationService {
     });
 
     // Create inventory item for traceability (per lifecycle requirements)
+    // Only create inventory if transaction is CONFIRMED (not PENDING_CONFIRMATION)
     let inventoryItem: { id: string } | null = null;
-    if (data.batchId) {
+    if (batchId && stockTransaction.status === 'CONFIRMED') {
       try {
         // Check if inventory item already exists for this batch
         const existingInventory = await this.prisma.inventoryItem.findUnique({
-          where: { batchId: data.batchId },
+          where: { batchId: batchId },
         });
 
         if (!existingInventory) {
@@ -314,7 +637,7 @@ export class AggregationService {
               variety: data.variety,
               quantity: data.quantity,
               qualityGrade: data.qualityGrade as any,
-              batchId: data.batchId,
+              batchId: batchId,
               stockInDate: new Date(),
               farmerId: farmerId || undefined,
               farmerName: farmerName || undefined,
@@ -353,34 +676,35 @@ export class AggregationService {
 
     // Create notifications (per lifecycle: manager, buyer, farmer)
     if (data.orderId && stockTransaction.order) {
+      const order = stockTransaction.order;
       try {
         // To Aggregation Manager
         await this.notificationHelperService.createNotification({
           userId,
           type: 'ORDER',
           title: 'New Stock Received',
-          message: `New stock received for order #${stockTransaction.order.orderNumber}`,
+          message: `New stock received for order #${order.orderNumber}`,
           priority: 'MEDIUM',
           entityType: 'ORDER',
           entityId: data.orderId,
           actionUrl: `/orders/${data.orderId}`,
           actionLabel: 'View Order',
-          metadata: { orderNumber: stockTransaction.order.orderNumber, transactionNumber: stockTransaction.transactionNumber },
+          metadata: { orderNumber: order.orderNumber, transactionNumber: stockTransaction.transactionNumber },
         });
 
         // To Buyer
-        if (stockTransaction.order.buyerId) {
+        if (order.buyerId) {
           await this.notificationHelperService.createNotification({
-            userId: stockTransaction.order.buyerId,
+            userId: order.buyerId,
             type: 'ORDER',
             title: 'Order Arrived at Center',
-            message: `Order #${stockTransaction.order.orderNumber} has arrived at aggregation center`,
+            message: `Order #${order.orderNumber} has arrived at aggregation center`,
             priority: 'MEDIUM',
             entityType: 'ORDER',
             entityId: data.orderId,
             actionUrl: `/orders/${data.orderId}`,
             actionLabel: 'View Order',
-            metadata: { orderNumber: stockTransaction.order.orderNumber },
+            metadata: { orderNumber: order.orderNumber },
           });
         }
 
@@ -390,13 +714,13 @@ export class AggregationService {
             userId: farmerId,
             type: 'ORDER',
             title: 'Produce Received',
-            message: `Your produce for order #${stockTransaction.order.orderNumber} has been received at center`,
+            message: `Your produce for order #${order.orderNumber} has been received at center`,
             priority: 'MEDIUM',
             entityType: 'ORDER',
             entityId: data.orderId,
             actionUrl: `/orders/${data.orderId}`,
             actionLabel: 'View Order',
-            metadata: { orderNumber: stockTransaction.order.orderNumber },
+            metadata: { orderNumber: order.orderNumber },
           });
         }
       } catch (error) {
