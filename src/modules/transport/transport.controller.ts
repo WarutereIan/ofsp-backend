@@ -36,17 +36,29 @@ export class TransportController {
   @Get('requests')
   @ApiOperation({ summary: 'Get all transport requests' })
   async getTransportRequests(
+    @CurrentUser() user: any,
     @Query('requesterId') requesterId?: string,
     @Query('providerId') providerId?: string,
     @Query('status') status?: string,
     @Query('type') type?: string,
   ) {
-    return this.transportService.getTransportRequests({
-      requesterId,
-      providerId,
+    // For transport providers, automatically filter by their providerId
+    // For other users, use the provided filters
+    const filters: any = {
       status,
       type,
-    });
+    };
+    
+    // If user is a transport provider, use their ID as providerId
+    if (user.role === 'transport_provider' && !providerId && !requesterId) {
+      filters.providerId = user.id;
+    } else {
+      // Allow explicit providerId/requesterId for admin or specific queries
+      if (providerId) filters.providerId = providerId;
+      if (requesterId) filters.requesterId = requesterId;
+    }
+    
+    return this.transportService.getTransportRequests(filters);
   }
 
   @Get('requests/:id')
@@ -267,13 +279,23 @@ export class TransportController {
   @Get('deliveries')
   @ApiOperation({ summary: 'Get active deliveries' })
   async getActiveDeliveries(
+    @CurrentUser() user: any,
     @Query('providerId') providerId?: string,
     @Query('requesterId') requesterId?: string,
   ) {
-    return this.transportService.getActiveDeliveries({
-      providerId,
-      requesterId,
-    });
+    // For transport providers, automatically filter by their providerId
+    // For other users, use the provided filters
+    const filters: any = {};
+    
+    if (user.role === 'transport_provider' && !providerId && !requesterId) {
+      filters.providerId = user.id;
+    } else {
+      // Allow explicit providerId/requesterId for admin or specific queries
+      if (providerId) filters.providerId = providerId;
+      if (requesterId) filters.requesterId = requesterId;
+    }
+    
+    return this.transportService.getActiveDeliveries(filters);
   }
 
   @Get('receipts/:id')
@@ -290,7 +312,15 @@ export class TransportController {
 
   @Get('stats')
   @ApiOperation({ summary: 'Get transport statistics' })
-  async getTransportStats(@Query('providerId') providerId?: string) {
-    return this.transportService.getTransportStats(providerId);
+  async getTransportStats(
+    @CurrentUser() user: any,
+    @Query('providerId') providerId?: string,
+  ) {
+    // For transport providers, automatically use their ID
+    // Allow explicit providerId for admin or specific queries
+    const effectiveProviderId = (user.role === 'transport_provider' && !providerId) 
+      ? user.id 
+      : providerId;
+    return this.transportService.getTransportStats(effectiveProviderId);
   }
 }

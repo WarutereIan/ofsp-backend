@@ -54,7 +54,18 @@ export class CreateOrderDto {
   @IsString()
   negotiationId?: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  deliveryCounty: string;
+  deliveryCounty?: string;
+
+  @ApiPropertyOptional({ enum: ['self_pickup', 'request_transport'], default: 'self_pickup' })
+  @IsOptional()
+  @IsEnum(['self_pickup', 'request_transport'])
+  fulfillmentType?: 'self_pickup' | 'request_transport';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  deliveryCoordinates?: string;
 }

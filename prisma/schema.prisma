@@ -253,6 +253,9 @@ enum MarketplaceOrderStatus {
   ORDER_PLACED
   ORDER_ACCEPTED
   PAYMENT_SECURED
+  READY_TO_PROCESS
+  PROCESSING
+  READY_FOR_COLLECTION
   IN_TRANSIT
   AT_AGGREGATION
   QUALITY_CHECKED
@@ -359,8 +362,9 @@ model MarketplaceOrder {
   paymentStatus PaymentStatus          @default(PENDING)
 
   // Delivery
-  deliveryAddress       String
-  deliveryCounty        String
+  fulfillmentType       String? // "self_pickup" | "request_transport"
+  deliveryAddress       String?
+  deliveryCounty        String?
   deliveryCoordinates   String? // lat,lng
   deliveryNotes         String?
   estimatedDeliveryDate DateTime?
@@ -373,6 +377,10 @@ model MarketplaceOrder {
   // Batch Tracking
   batchId String? @unique
   qrCode  String?
+
+  // Stock Out Tracking
+  stockOutRecorded Boolean @default(false) // Tracks if order has been recorded as stock out
+  collected Boolean @default(false) // Tracks if order has been collected by buyer
 
   // Media
   photos String[]
@@ -811,6 +819,7 @@ enum TransportType {
   PRODUCE_PICKUP
   PRODUCE_DELIVERY
   INPUT_DELIVERY
+  ORDER_DELIVERY
 }
 
 enum PickupScheduleStatus {
@@ -1232,6 +1241,14 @@ model StockTransaction {
   variety      String
   quantity     Float // kg
   qualityGrade QualityGrade
+  
+  // Grading Matrix Criteria (for quality assessment)
+  weightRange       String? // small, medium, large, extra_large
+  colorIntensity    Int? // 1-10 scale
+  physicalCondition String? // excellent, good, fair, poor
+  freshness         String? // very_fresh, fresh, moderate, aging
+  daysSinceHarvest  Int?
+  
   pricePerKg   Float?
   totalAmount  Float?
 

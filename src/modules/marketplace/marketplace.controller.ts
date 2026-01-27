@@ -100,12 +100,14 @@ export class MarketplaceController {
     @Query('farmerId') farmerId?: string,
     @Query('status') status?: string,
     @Query('listingId') listingId?: string,
+    @Query('centerId') centerId?: string,
   ) {
     return this.marketplaceService.getOrders({
       buyerId,
       farmerId,
       status,
       listingId,
+      centerId,
     });
   }
 
@@ -136,6 +138,33 @@ export class MarketplaceController {
       updateOrderStatusDto,
       user.id,
     );
+  }
+
+  @Put('orders/:id/start-processing')
+  @ApiOperation({ summary: 'Mark order as started processing (aggregation center)' })
+  async startOrderProcessing(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.startOrderProcessing(id, user.id);
+  }
+
+  @Put('orders/:id/ready-for-collection')
+  @ApiOperation({ summary: 'Mark order as processed and ready for collection (aggregation center)' })
+  async markOrderReadyForCollection(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.markOrderReadyForCollection(id, user.id);
+  }
+
+  @Put('orders/:id/collect')
+  @ApiOperation({ summary: 'Mark order as collected by buyer' })
+  async markOrderAsCollected(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.markOrderAsCollected(id, user.id);
   }
 
   // ============ RFQs ============

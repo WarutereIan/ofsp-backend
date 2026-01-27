@@ -102,6 +102,19 @@ export class AggregationController {
     return this.aggregationService.searchBatches(query, limitNum);
   }
 
+  @Get('orders/search')
+  @ApiOperation({ summary: 'Search orders using PostgreSQL full-text search by order ID or buyer name' })
+  async searchOrders(
+    @Query('q') query: string,
+    @Query('limit') limit?: string,
+  ) {
+    const limitNum = limit ? parseInt(limit, 10) : 10;
+    if (limitNum > 50) {
+      throw new BadRequestException('Limit cannot exceed 50');
+    }
+    return this.aggregationService.searchOrders(query, limitNum);
+  }
+
   @Post('stock-in')
   @ApiOperation({ summary: 'Create stock in transaction' })
   async createStockIn(

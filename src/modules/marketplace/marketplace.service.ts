@@ -4,6 +4,7 @@ import { NotificationHelperService } from '../../common/services/notification.se
 import { ActivityLogService } from '../../common/services/activity-log.service';
 import { generateBatchTraceability } from '../../common/utils/traceability.util';
 import { BadgeService } from '../badge/badge.service';
+import { TransportService } from '../transport/transport.service';
 import {
   CreateListingDto,
   UpdateListingDto,
@@ -26,6 +27,8 @@ export class MarketplaceService {
     private activityLogService: ActivityLogService,
     @Inject(forwardRef(() => BadgeService))
     private badgeService?: BadgeService,
+    @Inject(forwardRef(() => TransportService))
+    private transportService?: TransportService,
   ) {}
 
   // Helper to convert DTO variety enum to Prisma enum format
@@ -44,7 +47,10 @@ export class MarketplaceService {
   private readonly validStatusTransitions: Record<string, string[]> = {
     ORDER_PLACED: ['ORDER_ACCEPTED', 'PAYMENT_SECURED', 'ORDER_REJECTED', 'CANCELLED'], // Payment can be secured before order acceptance
     ORDER_ACCEPTED: ['PAYMENT_SECURED', 'ORDER_REJECTED', 'CANCELLED'],
-    PAYMENT_SECURED: ['IN_TRANSIT', 'CANCELLED'],
+    PAYMENT_SECURED: ['READY_TO_PROCESS', 'IN_TRANSIT', 'CANCELLED'],
+    READY_TO_PROCESS: ['PROCESSING', 'CANCELLED'], // Aggregation center can start processing
+    PROCESSING: ['READY_FOR_COLLECTION', 'CANCELLED'], // Processing complete, ready for buyer collection
+    READY_FOR_COLLECTION: ['OUT_FOR_DELIVERY', 'CANCELLED'], // Buyer can collect or arrange delivery
     IN_TRANSIT: ['AT_AGGREGATION', 'CANCELLED'],
     AT_AGGREGATION: ['QUALITY_CHECKED', 'CANCELLED'],
     QUALITY_CHECKED: ['QUALITY_APPROVED', 'QUALITY_REJECTED'],
@@ -222,6 +228,7 @@ export class MarketplaceService {
     farmerId?: string;
     status?: string;
     listingId?: string;
+    centerId?: string; // Filter orders by aggregation center (through stock transactions or listings)
   }) {
     const where: any = {};
 
@@ -236,6 +243,57 @@ export class MarketplaceService {
     }
     if (filters?.listingId) {
       where.listingId = filters.listingId;
+    }
+
+    // If centerId is provided, filter orders that are associated with this center
+    // Orders can be associated through:
+    // 1. Direct stock transactions (for stock-out orders)
+    // 2. Listing's batchId matching a stock transaction at this center (for orders in processing)
+    if (filters?.centerId) {
+      // Find batchIds from stock transactions at this center
+      const stockTransactions = await this.prisma.stockTransaction.findMany({
+        where: {
+          centerId: filters.centerId,
+          type: 'STOCK_IN', // Only STOCK_IN transactions create listings
+        },
+        select: {
+          batchId: true,
+        },
+        distinct: ['batchId'],
+      });
+
+      const batchIds = stockTransactions
+        .map((st) => st.batchId)
+        .filter((id): id is string => id !== null);
+
+      // Build OR condition for center association
+      const centerConditions: any[] = [
+        {
+          stockTransactions: {
+            some: {
+              centerId: filters.centerId,
+            },
+          },
+        },
+      ];
+
+      // Add listing batchId condition if we have batchIds
+      if (batchIds.length > 0) {
+        centerConditions.push({
+          listing: {
+            batchId: {
+              in: batchIds,
+            },
+          },
+        });
+      }
+
+      // Combine existing where conditions with center filter using AND
+      const existingConditions = { ...where };
+      where.AND = [
+        existingConditions,
+        { OR: centerConditions },
+      ];
     }
 
     return this.prisma.marketplaceOrder.findMany({
@@ -254,6 +312,19 @@ export class MarketplaceService {
         listing: true,
         payment: true,
         escrow: true,
+        stockTransactions: filters?.centerId ? {
+          where: { centerId: filters.centerId },
+          include: {
+            center: true, // Include center details
+          },
+          take: 1, // Just to verify association
+        } : {
+          include: {
+            center: true, // Include center details for all stock transactions
+          },
+          take: 1, // Get the most recent stock transaction
+          orderBy: { createdAt: 'desc' },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -313,6 +384,14 @@ export class MarketplaceService {
       }),
     ]);
 
+    // Validate delivery fields if transport is requested
+    const fulfillmentType = data.fulfillmentType || 'self_pickup';
+    if (fulfillmentType === 'request_transport') {
+      if (!data.deliveryAddress || !data.deliveryCounty) {
+        throw new BadRequestException('Delivery address and county are required when requesting transport');
+      }
+    }
+
     // Create order
     const order = await this.prisma.marketplaceOrder.create({
       data: {
@@ -324,8 +403,10 @@ export class MarketplaceService {
         quantity: data.quantity,
         pricePerKg: data.pricePerKg,
         totalAmount,
-        deliveryAddress: data.deliveryAddress || '',
-        deliveryCounty: data.deliveryCounty,
+        fulfillmentType,
+        deliveryAddress: data.deliveryAddress || null,
+        deliveryCounty: data.deliveryCounty || null,
+        deliveryCoordinates: data.deliveryCoordinates || null,
         deliveryNotes: data.notes,
         rfqResponseId: data.rfqResponseId,
         supplierOfferId: data.supplierOfferId,
@@ -347,6 +428,53 @@ export class MarketplaceService {
         listing: true,
       },
     });
+
+    // Create transport request if fulfillment type is request_transport
+    if (fulfillmentType === 'request_transport' && data.deliveryAddress && data.deliveryCounty && this.transportService) {
+      try {
+        // Get aggregation center location from listing or use a default
+        let pickupLocation = 'Aggregation Center';
+        let pickupCounty = data.deliveryCounty; // Fallback, should be improved
+        
+        if (order.listing) {
+          // Try to get center from listing's batchId -> stock transaction
+          const stockTx = await this.prisma.stockTransaction.findFirst({
+            where: {
+              batchId: order.listing.batchId,
+              type: 'STOCK_IN',
+            },
+            include: {
+              center: true,
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+          
+          if (stockTx?.center) {
+            pickupLocation = stockTx.center.location || stockTx.center.name;
+            pickupCounty = stockTx.center.county;
+          }
+        }
+
+        await this.transportService.createTransportRequest(
+          {
+            type: 'ORDER_DELIVERY',
+            description: `Delivery for order #${order.orderNumber}`,
+            requesterType: 'buyer',
+            pickupLocation,
+            pickupCounty,
+            deliveryLocation: data.deliveryAddress,
+            deliveryCounty: data.deliveryCounty,
+            deliveryCoordinates: data.deliveryCoordinates,
+            weight: data.quantity,
+            orderId: order.id,
+          },
+          buyerId,
+        );
+      } catch (error) {
+        // Log error but don't fail order creation
+        console.error('Failed to create transport request for order:', error);
+      }
+    }
 
     // Update negotiation status if order created from negotiation
     if (data.negotiationId) {
@@ -551,6 +679,26 @@ export class MarketplaceService {
     if (newStatus === 'ORDER_ACCEPTED') {
       // Escrow will be created when payment is made, not here
       // But we can prepare for it
+    } else if (newStatus === 'PROCESSING') {
+      // When order starts processing, deduct quantity from listing availableQuantity
+      if (order.listingId) {
+        try {
+          const listing = await this.prisma.produceListing.findUnique({
+            where: { id: order.listingId },
+          });
+          if (listing) {
+            const newAvailableQuantity = Math.max(0, listing.availableQuantity - order.quantity);
+            await this.prisma.produceListing.update({
+              where: { id: order.listingId },
+              data: { availableQuantity: newAvailableQuantity },
+            });
+            console.log(`Deducted ${order.quantity} kg from listing ${order.listingId}. New available: ${newAvailableQuantity} kg`);
+          }
+        } catch (error) {
+          console.error('Failed to update listing availableQuantity:', error);
+          // Don't fail the order status update if listing update fails
+        }
+      }
     } else if (newStatus === 'DELIVERED') {
       updateData.actualDeliveryDate = new Date();
     } else if (newStatus === 'COMPLETED') {
@@ -591,6 +739,123 @@ export class MarketplaceService {
         console.error('Error checking badges:', error);
       });
     }
+
+    return updatedOrder;
+  }
+
+  /**
+   * Mark order as started processing (by aggregation center)
+   * This deducts the quantity from the listing's availableQuantity
+   */
+  async startOrderProcessing(id: string, userId: string) {
+    const order = await this.getOrderById(id);
+
+    // Verify user has permission (only aggregation managers, admins, staff)
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    const isSystemUser = user?.role === 'AGGREGATION_MANAGER' || user?.role === 'ADMIN' || user?.role === 'STAFF';
+    if (!isSystemUser) {
+      throw new BadRequestException('Only aggregation center staff can start order processing');
+    }
+
+    // Verify order is ready to process
+    if (order.status !== 'READY_TO_PROCESS') {
+      throw new BadRequestException(`Order must be in READY_TO_PROCESS status. Current status: ${order.status}`);
+    }
+
+    // Update order status to PROCESSING
+    // The listing availableQuantity will be deducted in updateOrderStatus when status is PROCESSING
+    return this.updateOrderStatus(id, { status: 'PROCESSING' }, userId);
+  }
+
+  /**
+   * Mark order as processed and ready for collection (by aggregation center)
+   */
+  async markOrderReadyForCollection(id: string, userId: string) {
+    const order = await this.getOrderById(id);
+
+    // Verify user has permission (only aggregation managers, admins, staff)
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    const isSystemUser = user?.role === 'AGGREGATION_MANAGER' || user?.role === 'ADMIN' || user?.role === 'STAFF';
+    if (!isSystemUser) {
+      throw new BadRequestException('Only aggregation center staff can mark orders as ready for collection');
+    }
+
+    // Verify order is being processed
+    if (order.status !== 'PROCESSING') {
+      throw new BadRequestException(`Order must be in PROCESSING status. Current status: ${order.status}`);
+    }
+
+    // Update order status to READY_FOR_COLLECTION
+    return this.updateOrderStatus(id, { status: 'READY_FOR_COLLECTION' }, userId);
+  }
+
+  async markOrderAsCollected(id: string, userId: string) {
+    const order = await this.getOrderById(id);
+
+    // Verify user has permission (only buyer can mark as collected)
+    if (order.buyerId !== userId) {
+      throw new BadRequestException('Only the buyer can mark this order as collected');
+    }
+
+    // Verify order is ready for collection (stockOutRecorded must be true)
+    if (!order.stockOutRecorded) {
+      throw new BadRequestException('Order is not ready for collection. Stock out must be recorded first.');
+    }
+
+    // Update order to mark as collected
+    const updatedOrder = await this.prisma.marketplaceOrder.update({
+      where: { id },
+      data: { collected: true },
+      include: {
+        buyer: {
+          include: {
+            profile: true,
+          },
+        },
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+        listing: true,
+        payment: true,
+        escrow: true,
+      },
+    });
+
+    // Create notification
+    await this.notificationHelperService.createNotification({
+      userId: order.farmerId,
+      type: 'ORDER',
+      title: 'Order Collected',
+      message: `Order #${order.orderNumber} has been collected by buyer`,
+      priority: 'LOW',
+      entityType: 'ORDER',
+      entityId: id,
+      actionUrl: `/orders/${id}`,
+      actionLabel: 'View Order',
+      metadata: { orderNumber: order.orderNumber },
+    });
+
+    // Create activity log
+    await this.activityLogService.createActivityLog({
+      userId,
+      action: 'ORDER_COLLECTED',
+      entityType: 'ORDER',
+      entityId: id,
+      metadata: {
+        orderNumber: order.orderNumber,
+        collectedAt: new Date().toISOString(),
+      },
+    });
 
     return updatedOrder;
   }

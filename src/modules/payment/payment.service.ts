@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NotificationHelperService } from '../../common/services/notification.service';
 import { ActivityLogService } from '../../common/services/activity-log.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
+import { TransportService } from '../transport/transport.service';
 import {
   CreatePaymentDto,
   UpdatePaymentStatusDto,
@@ -20,6 +21,8 @@ export class PaymentService {
     private activityLogService: ActivityLogService,
     @Inject(forwardRef(() => MarketplaceService))
     private marketplaceService: MarketplaceService,
+    @Inject(forwardRef(() => TransportService))
+    private transportService?: TransportService,
   ) {}
 
   // ============ Payments ============
@@ -768,6 +771,100 @@ export class PaymentService {
       });
     } catch (error) {
       console.error('Failed to create notifications:', error);
+    }
+
+    // Update order status to READY_TO_PROCESS when farmer confirms payment
+    // This marks the order as ready for aggregation center to start processing
+    try {
+      await this.marketplaceService.updateOrderStatus(
+        orderId,
+        { status: 'READY_TO_PROCESS' },
+        farmerId,
+      );
+    } catch (error) {
+      console.error('Failed to update order status to READY_TO_PROCESS:', error);
+      // Don't fail the payment confirmation if status update fails
+    }
+
+    // Create transport request if fulfillment type is request_transport and transport was requested
+    // This happens when payment is confirmed, so transport providers can see the request
+    if (order.fulfillmentType === 'request_transport' && order.deliveryAddress && order.deliveryCounty && this.transportService) {
+      try {
+        // Check if transport request already exists for this order
+        const existingRequest = await this.prisma.transportRequest.findFirst({
+          where: { orderId },
+        });
+
+        // Only create if it doesn't exist (in case it was created during order creation)
+        if (!existingRequest) {
+          // Get aggregation center location from order's stock transactions
+          let pickupLocation = 'Aggregation Center';
+          let pickupCounty = order.deliveryCounty; // Fallback
+
+          // Try to get center from order's stock transactions
+          const stockTx = await this.prisma.stockTransaction.findFirst({
+            where: {
+              orderId,
+              type: 'STOCK_IN',
+            },
+            include: {
+              center: true,
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          if (stockTx?.center) {
+            pickupLocation = stockTx.center.location || stockTx.center.name;
+            pickupCounty = stockTx.center.county;
+          } else {
+            // Try to get from listing's batch
+            if (order.listingId) {
+              const listing = await this.prisma.produceListing.findUnique({
+                where: { id: order.listingId },
+                select: { batchId: true },
+              });
+
+              if (listing?.batchId) {
+                // Query StockTransaction using the listing's batchId
+                const stockTxFromBatch = await this.prisma.stockTransaction.findFirst({
+                  where: {
+                    batchId: listing.batchId,
+                    type: 'STOCK_IN',
+                  },
+                  include: {
+                    center: true,
+                  },
+                  orderBy: { createdAt: 'desc' },
+                });
+
+                if (stockTxFromBatch?.center) {
+                  pickupLocation = stockTxFromBatch.center.location || stockTxFromBatch.center.name;
+                  pickupCounty = stockTxFromBatch.center.county;
+                }
+              }
+            }
+          }
+
+          await this.transportService.createTransportRequest(
+            {
+              type: 'ORDER_DELIVERY',
+              description: `Delivery for order #${order.orderNumber}`,
+              requesterType: 'buyer',
+              pickupLocation,
+              pickupCounty,
+              deliveryLocation: order.deliveryAddress,
+              deliveryCounty: order.deliveryCounty,
+              deliveryCoordinates: order.deliveryCoordinates || undefined,
+              weight: order.quantity,
+              orderId: order.id,
+            },
+            order.buyerId,
+          );
+        }
+      } catch (error) {
+        // Log error but don't fail payment confirmation
+        console.error('Failed to create transport request after payment confirmation:', error);
+      }
     }
 
     // Create activity log

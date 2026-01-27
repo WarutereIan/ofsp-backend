@@ -175,6 +175,7 @@ export class AggregationService {
 
   /**
    * Search for batches using PostgreSQL full-text search
+   * Searches by batchId, qrCode, and farmer name (from Profile table)
    * Uses tsvector and tsquery for efficient text search
    */
   async searchBatches(query: string, limit: number = 10) {
@@ -188,6 +189,7 @@ export class AggregationService {
     const likeQuery = `%${query.trim()}%`;
     
     // Use PostgreSQL full-text search with ranking
+    // Search by batchId, qrCode, and farmer name (from Profile table - firstName + lastName)
     // Using Prisma.sql for proper parameterization to prevent SQL injection
     const results = await this.prisma.$queryRaw<Array<{
       id: string;
@@ -214,23 +216,29 @@ export class AggregationService {
           st.quantity,
           st."qualityGrade",
           st."farmerId",
-          st."farmerName",
+          COALESCE(p."firstName" || ' ' || p."lastName", st."farmerName", u.email) as "farmerName",
           st."centerId",
           st."centerName",
           st."createdAt",
           st.type,
           st."transactionNumber",
           ts_rank(
-            to_tsvector('simple', COALESCE(st."batchId", '') || ' ' || COALESCE(st."qrCode", '')),
+            to_tsvector('simple', COALESCE(st."batchId", '') || ' ' || COALESCE(st."qrCode", '') || ' ' || COALESCE(p."firstName" || ' ' || p."lastName", st."farmerName", u.email, '')),
             plainto_tsquery('simple', ${sanitizedQuery})
           ) as rank
         FROM stock_transactions st
+        LEFT JOIN users u ON st."farmerId" = u.id
+        LEFT JOIN profiles p ON u.id = p."userId"
         WHERE 
           st."batchId" IS NOT NULL
           AND (
-            to_tsvector('simple', COALESCE(st."batchId", '') || ' ' || COALESCE(st."qrCode", '')) 
+            to_tsvector('simple', COALESCE(st."batchId", '') || ' ' || COALESCE(st."qrCode", '') || ' ' || COALESCE(p."firstName" || ' ' || p."lastName", st."farmerName", u.email, '')) 
             @@ plainto_tsquery('simple', ${sanitizedQuery})
             OR st."batchId" ILIKE ${likeQuery}
+            OR st."qrCode" ILIKE ${likeQuery}
+            OR (p."firstName" || ' ' || p."lastName") ILIKE ${likeQuery}
+            OR st."farmerName" ILIKE ${likeQuery}
+            OR u.email ILIKE ${likeQuery}
           )
         ORDER BY 
           rank DESC,
@@ -266,6 +274,91 @@ export class AggregationService {
     return results
       .map((r) => transactionMap.get(r.id))
       .filter((t): t is NonNullable<typeof t> => t !== undefined);
+  }
+
+  /**
+   * Search for orders using PostgreSQL full-text search
+   * Searches by orderNumber and buyer name (from User table)
+   * Uses tsvector and tsquery for efficient text search
+   */
+  async searchOrders(query: string, limit: number = 10) {
+    if (!query || query.trim().length < 2) {
+      return [];
+    }
+
+    // Sanitize query for PostgreSQL full-text search
+    // Replace special characters and prepare for tsquery
+    const sanitizedQuery = query.trim().replace(/[^\w\s-]/g, ' ').replace(/\s+/g, ' & ');
+    const likeQuery = `%${query.trim()}%`;
+    
+    // Use PostgreSQL full-text search with ranking
+    // Search by orderNumber and buyer name (from Profile table - firstName + lastName)
+    // qualityGrade comes from ProduceListing if listingId exists
+    const results = await this.prisma.$queryRaw<Array<{
+      id: string;
+      orderNumber: string;
+      buyerId: string;
+      buyerName: string | null;
+      buyerPhone: string | null;
+      variety: string;
+      quantity: number;
+      qualityGrade: string | null;
+      status: string;
+      totalAmount: number;
+      createdAt: Date;
+      rank: number;
+    }>>(
+      Prisma.sql`
+        SELECT 
+          mo.id,
+          mo."orderNumber",
+          mo."buyerId",
+          COALESCE(p."firstName" || ' ' || p."lastName", u.email) as "buyerName",
+          u.phone as "buyerPhone",
+          mo.variety,
+          mo.quantity,
+          pl."qualityGrade",
+          mo.status,
+          mo."totalAmount",
+          mo."createdAt",
+          ts_rank(
+            to_tsvector('simple', COALESCE(mo."orderNumber", '') || ' ' || COALESCE(p."firstName" || ' ' || p."lastName", u.email, '')),
+            plainto_tsquery('simple', ${sanitizedQuery})
+          ) as rank
+        FROM marketplace_orders mo
+        INNER JOIN users u ON mo."buyerId" = u.id
+        LEFT JOIN profiles p ON u.id = p."userId"
+        LEFT JOIN produce_listings pl ON mo."listingId" = pl.id
+        WHERE 
+          (mo."stockOutRecorded" IS NULL OR mo."stockOutRecorded" = false)
+          AND (
+            to_tsvector('simple', COALESCE(mo."orderNumber", '') || ' ' || COALESCE(p."firstName" || ' ' || p."lastName", u.email, '')) 
+            @@ plainto_tsquery('simple', ${sanitizedQuery})
+            OR mo."orderNumber" ILIKE ${likeQuery}
+            OR (p."firstName" || ' ' || p."lastName") ILIKE ${likeQuery}
+            OR u.email ILIKE ${likeQuery}
+          )
+        ORDER BY 
+          rank DESC,
+          mo."createdAt" DESC
+        LIMIT ${limit}
+      `
+    );
+
+    // Return results directly (they already have all needed fields)
+    return results.map((order) => ({
+      id: order.id,
+      orderNumber: order.orderNumber,
+      buyerId: order.buyerId,
+      buyerName: order.buyerName || '',
+      buyerPhone: order.buyerPhone || '',
+      variety: order.variety,
+      quantity: order.quantity,
+      qualityGrade: order.qualityGrade || 'B', // Default to 'B' if not available
+      status: order.status,
+      totalAmount: order.totalAmount,
+      createdAt: order.createdAt,
+    }));
   }
 
   /**
@@ -522,22 +615,31 @@ export class AggregationService {
     // Get farmer info from order if orderId is provided and farmerId is not
     let farmerId = data.farmerId;
     let farmerName = data.farmerName;
+    let validOrderId: string | undefined = undefined;
 
-    if (data.orderId && !farmerId) {
+    // Validate orderId exists if provided
+    if (data.orderId) {
       const order = await this.prisma.marketplaceOrder.findUnique({
         where: { id: data.orderId },
-        select: { farmerId: true },
+        select: { id: true, farmerId: true },
       });
-      if (order?.farmerId) {
-        farmerId = order.farmerId;
-        // Get farmer name from profile
-        const profile = await this.prisma.profile.findUnique({
-          where: { userId: farmerId },
-          select: { firstName: true, lastName: true },
-        });
-        if (profile) {
-          farmerName = `${profile.firstName} ${profile.lastName}`;
+      if (order) {
+        validOrderId = order.id;
+        // Get farmer info from order if farmerId is not provided
+        if (!farmerId && order.farmerId) {
+          farmerId = order.farmerId;
+          // Get farmer name from profile
+          const profile = await this.prisma.profile.findUnique({
+            where: { userId: farmerId },
+            select: { firstName: true, lastName: true },
+          });
+          if (profile) {
+            farmerName = `${profile.firstName} ${profile.lastName}`;
+          }
         }
+      } else {
+        // Order doesn't exist, log warning but don't fail - set orderId to undefined
+        console.warn(`Order ID ${data.orderId} not found, creating stock transaction without order reference`);
       }
     }
 
@@ -596,9 +698,15 @@ export class AggregationService {
         variety: data.variety,
         quantity: data.quantity,
         qualityGrade: data.qualityGrade as any,
+        // Grading Matrix Criteria
+        weightRange: data.weightRange,
+        colorIntensity: data.colorIntensity,
+        physicalCondition: data.physicalCondition,
+        freshness: data.freshness,
+        daysSinceHarvest: data.daysSinceHarvest,
         pricePerKg: data.pricePerKg,
         totalAmount: data.quantity * (data.pricePerKg || 0),
-        orderId: data.orderId,
+        orderId: validOrderId, // Only set if order exists
         farmerId,
         farmerName,
         batchId: batchId,
@@ -661,11 +769,84 @@ export class AggregationService {
       }
     }
 
+    // Automatically create a listing when stock in is recorded (if farmer exists)
+    // Only create listing for STOCK_IN (not TRANSFER) and if farmerId exists
+    if (farmerId && transactionType === 'STOCK_IN' && !isTransferFromSatellite) {
+      try {
+        // Check if listing already exists for this batchId
+        const existingListing = batchId 
+          ? await this.prisma.produceListing.findUnique({
+              where: { batchId: batchId },
+            })
+          : null;
+
+        if (!existingListing) {
+          // Get location information from aggregation center or farmer profile
+          const center = stockTransaction.center;
+          const farmerProfile = stockTransaction.farmer?.profile;
+
+          // Calculate harvest date: use daysSinceHarvest if available, otherwise use current date
+          const harvestDate = data.daysSinceHarvest 
+            ? new Date(Date.now() - data.daysSinceHarvest * 24 * 60 * 60 * 1000)
+            : new Date();
+
+          // Get location details - prefer center location, fallback to farmer profile
+          const county = center?.county || farmerProfile?.county || 'Unknown';
+          const subCounty = center?.subCounty || farmerProfile?.subCounty || undefined;
+          const location = center?.location || farmerProfile?.address || county;
+
+          // Set default pricePerKg if not provided (use a reasonable default or make it configurable)
+          // For now, using a default based on quality grade
+          const defaultPricePerKg: Record<string, number> = {
+            'A': 80, // Premium grade
+            'B': 60, // Standard grade
+            'C': 40, // Processing grade
+          };
+          const pricePerKg = data.pricePerKg || defaultPricePerKg[data.qualityGrade] || 60;
+
+          await this.prisma.produceListing.create({
+            data: {
+              farmerId: farmerId,
+              variety: data.variety as any,
+              quantity: data.quantity,
+              availableQuantity: data.quantity, // Initially same as quantity
+              pricePerKg: pricePerKg,
+              qualityGrade: data.qualityGrade as any,
+              harvestDate: harvestDate,
+              county: county,
+              subCounty: subCounty,
+              location: location,
+              coordinates: center?.coordinates || farmerProfile?.coordinates || undefined,
+              photos: stockTransaction.photos || [],
+              description: `Automatically created listing from stock in at ${center?.name || 'aggregation center'}. Batch: ${batchId}`,
+              batchId: batchId || undefined,
+              qrCode: qrCode || undefined,
+              status: 'ACTIVE',
+            },
+          });
+        } else {
+          // If listing exists, update available quantity if needed
+          // (This handles cases where stock in adds more quantity to an existing batch)
+          await this.prisma.produceListing.update({
+            where: { id: existingListing.id },
+            data: {
+              availableQuantity: existingListing.availableQuantity + data.quantity,
+              quantity: existingListing.quantity + data.quantity,
+            },
+          });
+        }
+      } catch (error) {
+        console.error('Failed to create listing from stock in:', error);
+        // Don't fail the stock transaction if listing creation fails
+        // Log the error but continue with the stock transaction
+      }
+    }
+
     // Update marketplace order status if stock in is for an order
-    if (data.orderId && stockTransaction.order) {
+    if (validOrderId && stockTransaction.order) {
       try {
         await this.marketplaceService.updateOrderStatus(
-          data.orderId,
+          validOrderId,
           { status: 'AT_AGGREGATION' },
           userId,
         );
@@ -675,7 +856,7 @@ export class AggregationService {
     }
 
     // Create notifications (per lifecycle: manager, buyer, farmer)
-    if (data.orderId && stockTransaction.order) {
+    if (validOrderId && stockTransaction.order) {
       const order = stockTransaction.order;
       try {
         // To Aggregation Manager
@@ -686,8 +867,8 @@ export class AggregationService {
           message: `New stock received for order #${order.orderNumber}`,
           priority: 'MEDIUM',
           entityType: 'ORDER',
-          entityId: data.orderId,
-          actionUrl: `/orders/${data.orderId}`,
+          entityId: validOrderId,
+          actionUrl: `/orders/${validOrderId}`,
           actionLabel: 'View Order',
           metadata: { orderNumber: order.orderNumber, transactionNumber: stockTransaction.transactionNumber },
         });
@@ -701,8 +882,8 @@ export class AggregationService {
             message: `Order #${order.orderNumber} has arrived at aggregation center`,
             priority: 'MEDIUM',
             entityType: 'ORDER',
-            entityId: data.orderId,
-            actionUrl: `/orders/${data.orderId}`,
+          entityId: validOrderId,
+          actionUrl: `/orders/${validOrderId}`,
             actionLabel: 'View Order',
             metadata: { orderNumber: order.orderNumber },
           });
@@ -717,8 +898,8 @@ export class AggregationService {
             message: `Your produce for order #${order.orderNumber} has been received at center`,
             priority: 'MEDIUM',
             entityType: 'ORDER',
-            entityId: data.orderId,
-            actionUrl: `/orders/${data.orderId}`,
+          entityId: validOrderId,
+          actionUrl: `/orders/${validOrderId}`,
             actionLabel: 'View Order',
             metadata: { orderNumber: order.orderNumber },
           });
@@ -736,7 +917,7 @@ export class AggregationService {
       entityId: stockTransaction.id,
       metadata: {
         transactionNumber: stockTransaction.transactionNumber,
-        orderId: data.orderId,
+        orderId: validOrderId,
         centerId: data.centerId,
         sourceCenterId: data.sourceCenterId,
         inventoryItemId: inventoryItem?.id,
@@ -800,6 +981,20 @@ export class AggregationService {
       throw new BadRequestException('Insufficient stock in center');
     }
 
+    // Validate orderId exists if provided
+    let validOrderId: string | undefined = undefined;
+    if (data.orderId) {
+      const order = await this.prisma.marketplaceOrder.findUnique({
+        where: { id: data.orderId },
+        select: { id: true },
+      });
+      if (order) {
+        validOrderId = order.id;
+      } else {
+        console.warn(`Order ID ${data.orderId} not found, creating stock transaction without order reference`);
+      }
+    }
+
     // Generate transaction number
     const transactionNumber = await this.prisma.$queryRaw<Array<{ generate_stock_transaction_number: string }>>`
       SELECT generate_stock_transaction_number() as generate_stock_transaction_number
@@ -815,7 +1010,7 @@ export class AggregationService {
         qualityGrade: data.qualityGrade as any,
         pricePerKg: data.pricePerKg,
         totalAmount: data.quantity * (data.pricePerKg || 0),
-        orderId: data.orderId,
+        orderId: validOrderId,
         buyerId: data.buyerId,
         buyerName: data.buyerName,
         batchId: data.batchId,
@@ -860,21 +1055,40 @@ export class AggregationService {
       }
     }
 
-    // Update marketplace order status if stock out is for an order
-    if (data.orderId && stockTransaction.order) {
+    // Update marketplace order status and mark as stock out recorded if stock out is for an order
+    if (validOrderId) {
       try {
-        await this.marketplaceService.updateOrderStatus(
-          data.orderId,
-          { status: 'OUT_FOR_DELIVERY' },
-          userId,
-        );
+        // Update order status
+        if (stockTransaction.order) {
+          await this.marketplaceService.updateOrderStatus(
+            validOrderId,
+            { status: 'OUT_FOR_DELIVERY' },
+            userId,
+          );
+        }
+        
+        // Mark order as stock out recorded to prevent duplicate processing
+        // This must happen even if order status update fails
+        try {
+          const updated = await this.prisma.marketplaceOrder.update({
+            where: { id: validOrderId },
+            data: { stockOutRecorded: true },
+            select: { id: true, stockOutRecorded: true, orderNumber: true },
+          });
+          console.log(`Order ${updated.orderNumber} (${validOrderId}) marked as stock out recorded. Value: ${updated.stockOutRecorded}`);
+        } catch (updateError: any) {
+          console.error(`Failed to mark order ${validOrderId} as stock out recorded:`, updateError?.message || updateError);
+          // Re-throw to ensure we know about this critical failure
+          throw new Error(`Failed to mark order as stock out recorded: ${updateError?.message || 'Unknown error'}`);
+        }
       } catch (error) {
-        console.error('Failed to update order status:', error);
+        console.error('Failed to update order status or mark as stock out recorded:', error);
+        // Don't fail the whole stock out transaction, but log the error
       }
     }
 
     // Create notifications (per lifecycle: buyer, transport provider)
-    if (data.orderId && stockTransaction.order) {
+    if (validOrderId && stockTransaction.order) {
       try {
         // To Buyer
         if (stockTransaction.order.buyerId) {
@@ -885,8 +1099,8 @@ export class AggregationService {
             message: `Order #${stockTransaction.order.orderNumber} is out for delivery`,
             priority: 'MEDIUM',
             entityType: 'ORDER',
-            entityId: data.orderId,
-            actionUrl: `/orders/${data.orderId}`,
+          entityId: validOrderId,
+          actionUrl: `/orders/${validOrderId}`,
             actionLabel: 'View Order',
             metadata: { orderNumber: stockTransaction.order.orderNumber },
           });
@@ -906,7 +1120,7 @@ export class AggregationService {
       entityId: stockTransaction.id,
       metadata: {
         transactionNumber: stockTransaction.transactionNumber,
-        orderId: data.orderId,
+        orderId: validOrderId,
         centerId: data.centerId,
       },
     });
@@ -974,22 +1188,30 @@ export class AggregationService {
     // Get farmer info from order if orderId is provided
     let farmerId = data.farmerId;
     let farmerName = data.farmerName;
+    let validOrderId: string | undefined = undefined;
 
-    if (data.orderId && !farmerId) {
+    // Validate orderId exists if provided
+    if (data.orderId) {
       const order = await this.prisma.marketplaceOrder.findUnique({
         where: { id: data.orderId },
-        select: { farmerId: true },
+        select: { id: true, farmerId: true },
       });
-      if (order?.farmerId) {
-        farmerId = order.farmerId;
-        // Get farmer name from profile
-        const profile = await this.prisma.profile.findUnique({
-          where: { userId: farmerId },
-          select: { firstName: true, lastName: true },
-        });
-        if (profile) {
-          farmerName = `${profile.firstName} ${profile.lastName}`;
+      if (order) {
+        validOrderId = order.id;
+        // Get farmer info from order if farmerId is not provided
+        if (!farmerId && order.farmerId) {
+          farmerId = order.farmerId;
+          // Get farmer name from profile
+          const profile = await this.prisma.profile.findUnique({
+            where: { userId: farmerId },
+            select: { firstName: true, lastName: true },
+          });
+          if (profile) {
+            farmerName = `${profile.firstName} ${profile.lastName}`;
+          }
         }
+      } else {
+        console.warn(`Order ID ${data.orderId} not found, creating quality check without order reference`);
       }
     }
 
@@ -1008,7 +1230,7 @@ export class AggregationService {
     const qualityCheck = await this.prisma.qualityCheck.create({
       data: {
         centerId: data.centerId,
-        orderId: data.orderId,
+        orderId: validOrderId,
         transactionId: data.transactionId,
         variety: data.variety,
         quantity: data.quantity,
@@ -1044,11 +1266,11 @@ export class AggregationService {
     });
 
     // Update marketplace order status and quality info
-    if (data.orderId && qualityCheck.order) {
+    if (validOrderId && qualityCheck.order) {
       try {
         // First update to QUALITY_CHECKED
         await this.marketplaceService.updateOrderStatus(
-          data.orderId,
+          validOrderId,
           { status: 'QUALITY_CHECKED' },
           checkedBy,
         );
@@ -1056,14 +1278,14 @@ export class AggregationService {
         // Then update to QUALITY_APPROVED or QUALITY_REJECTED
         const finalStatus = approved ? 'QUALITY_APPROVED' : 'QUALITY_REJECTED';
         await this.marketplaceService.updateOrderStatus(
-          data.orderId,
+          validOrderId,
           { status: finalStatus },
           checkedBy,
         );
 
         // Update order quality score and feedback
         await this.prisma.marketplaceOrder.update({
-          where: { id: data.orderId },
+          where: { id: validOrderId },
           data: {
             qualityScore: data.qualityScore,
             qualityFeedback: approved ? 'Quality approved' : (qualityCheck.rejectionReason || 'Quality rejected'),
@@ -1111,7 +1333,7 @@ export class AggregationService {
       entityType: 'QUALITY_CHECK',
       entityId: qualityCheck.id,
       metadata: {
-        orderId: data.orderId,
+        orderId: validOrderId,
         approved,
         qualityScore: data.qualityScore,
       },

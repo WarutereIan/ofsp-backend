@@ -3,9 +3,9 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateTransportRequestDto {
   @ApiProperty({
-    enum: ['PRODUCE_PICKUP', 'PRODUCE_DELIVERY', 'INPUT_DELIVERY'],
+    enum: ['PRODUCE_PICKUP', 'PRODUCE_DELIVERY', 'INPUT_DELIVERY', 'ORDER_DELIVERY'],
   })
-  @IsEnum(['PRODUCE_PICKUP', 'PRODUCE_DELIVERY', 'INPUT_DELIVERY'])
+  @IsEnum(['PRODUCE_PICKUP', 'PRODUCE_DELIVERY', 'INPUT_DELIVERY', 'ORDER_DELIVERY'])
   type: string;
 
   @ApiPropertyOptional()

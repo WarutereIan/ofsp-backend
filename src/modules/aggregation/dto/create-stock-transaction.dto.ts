@@ -80,4 +80,32 @@ export class CreateStockTransactionDto {
   @IsOptional()
   @IsString()
   transferTransactionId?: string; // Reference to the STOCK_OUT transaction at source center
+
+  // Grading Matrix Criteria (for quality assessment)
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  weightRange?: string; // small, medium, large, extra_large
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  colorIntensity?: number; // 1-10 scale
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  physicalCondition?: string; // excellent, good, fair, poor
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  freshness?: string; // very_fresh, fresh, moderate, aging
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  daysSinceHarvest?: number;
 }

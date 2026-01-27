@@ -1190,6 +1190,9 @@ export class AnalyticsService {
 
     // Process Pending Orders
     pendingOrders.forEach(order => {
+      // Skip orders without delivery county (e.g., self-pickup orders)
+      if (!order.deliveryCounty) return;
+      
       const key = `${order.variety}-A-${order.deliveryCounty}`; // Assume Grade A for pending orders
       if (!demandMap.has(key)) {
         demandMap.set(key, {

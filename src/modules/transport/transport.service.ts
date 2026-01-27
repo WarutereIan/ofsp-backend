@@ -50,6 +50,9 @@ export class TransportService {
     }
     if (filters?.providerId) {
       where.providerId = filters.providerId;
+    } else if (filters?.status === 'PENDING') {
+      // For pending requests, show only unassigned requests (providerId is null)
+      where.providerId = null;
     }
     if (filters?.status) {
       where.status = filters.status;
@@ -153,6 +156,18 @@ export class TransportService {
 
       // Create activity log
       await this.activityLogService.logTransportCreated(request, requesterId);
+
+      // Update order fulfillment type if transport request is linked to an order
+      if (data.orderId) {
+        try {
+          await this.prisma.marketplaceOrder.update({
+            where: { id: data.orderId },
+            data: { fulfillmentType: 'request_transport' },
+          });
+        } catch (error) {
+          this.logger.warn(`Failed to update order fulfillment type for order ${data.orderId}:`, error);
+        }
+      }
 
       return request;
     } catch (error) {
@@ -270,6 +285,37 @@ export class TransportService {
       }
     }
 
+    // Update order status for ORDER_DELIVERY type
+    if (request.orderId && request.type === 'ORDER_DELIVERY') {
+      try {
+        if (newStatus === 'ACCEPTED' && oldStatus === 'PENDING') {
+          // Transport accepted - order can move to IN_TRANSIT when pickup/delivery starts
+          // For now, we'll update when transport goes in transit
+        } else if ((newStatus === 'IN_TRANSIT_PICKUP' || newStatus === 'IN_TRANSIT_DELIVERY') && 
+                   oldStatus !== 'IN_TRANSIT_PICKUP' && oldStatus !== 'IN_TRANSIT_DELIVERY') {
+          // Transport in transit - update order to IN_TRANSIT
+          await this.marketplaceService.updateOrderStatus(
+            request.orderId,
+            { status: 'IN_TRANSIT' },
+            userId,
+          );
+        } else if (newStatus === 'DELIVERED' && oldStatus !== 'DELIVERED') {
+          // Transport delivered - update order to DELIVERED
+          await this.marketplaceService.updateOrderStatus(
+            request.orderId,
+            { status: 'DELIVERED' },
+            userId,
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `Failed to update order status for ORDER_DELIVERY (requestId=${id}, orderId=${request.orderId}, newStatus=${newStatus})`,
+          (error as Error)?.stack ?? String(error),
+        );
+        // Don't re-throw - allow transport status to update even if order status update fails
+      }
+    }
+
     // Create notifications
     if (request.requesterId) {
       await this.notificationHelperService.createNotification({
@@ -329,6 +375,29 @@ export class TransportService {
         },
       },
     });
+
+    // Update marketplace order status if transport is linked to an order
+    if (request.orderId) {
+      try {
+        // For ORDER_DELIVERY, we can optionally update order status when transport is accepted
+        // For now, we'll wait until transport goes in transit to update order status
+        // This keeps the order status more accurate to actual delivery progress
+        if (request.type === 'ORDER_DELIVERY') {
+          // Order will be updated to IN_TRANSIT when transport goes in transit
+          // and to DELIVERED when transport is delivered
+        } else if (request.type === 'PRODUCE_PICKUP') {
+          // For produce pickup, order will be updated when transport goes in transit
+        } else if (request.type === 'PRODUCE_DELIVERY') {
+          // For produce delivery, order will be updated when transport is delivered
+        }
+      } catch (error) {
+        this.logger.error(
+          `Failed to handle order update on transport accept (requestId=${id}, orderId=${request.orderId})`,
+          (error as Error)?.stack ?? String(error),
+        );
+        // Don't re-throw - allow transport acceptance even if order update logic fails
+      }
+    }
 
     // Create notifications for requester and provider
     await this.notificationHelperService.createNotifications([
@@ -1477,6 +1546,9 @@ export class TransportService {
     }
 
     try {
+      // Use provided timestamp if available, otherwise use current time
+      const timestamp = data.timestamp ? new Date(data.timestamp) : new Date();
+      
       const trackingUpdate = await this.prisma.trackingUpdate.create({
         data: {
           requestId: requestId,
@@ -1485,6 +1557,7 @@ export class TransportService {
           status: data.status,
           notes: data.notes,
           updatedBy: userId,
+          createdAt: timestamp, // Use captured timestamp
         },
       });
 
@@ -1520,7 +1593,6 @@ export class TransportService {
   }) {
     const where: any = {
       OR: [
-        { status: 'ACCEPTED' as any },
         { status: 'IN_TRANSIT_PICKUP' as any },
         { status: 'IN_TRANSIT_DELIVERY' as any },
       ],
