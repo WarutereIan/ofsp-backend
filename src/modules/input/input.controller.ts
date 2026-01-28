@@ -71,35 +71,28 @@ export class InputController {
     });
   }
 
-  @Get(':id')
-  @ApiOperation({ summary: 'Get input product by ID' })
-  async getInputById(@Param('id') id: string) {
-    return this.inputService.getInputById(id);
+  @Get('customers/stats')
+  @ApiOperation({ summary: 'Get customer statistics' })
+  async getCustomerStats(@Query('providerId') providerId?: string) {
+    return this.inputService.getCustomerStats(providerId);
   }
 
-  @Post()
-  @ApiOperation({ summary: 'Create an input product' })
-  async createInput(
-    @Body() createInputDto: CreateInputDto,
-    @CurrentUser() user: any,
-  ) {
-    return this.inputService.createInput(createInputDto, user.id);
-  }
-
-  @Put(':id')
-  @ApiOperation({ summary: 'Update an input product' })
-  async updateInput(
+  @Get('customers/:id')
+  @ApiOperation({ summary: 'Get input customer by ID' })
+  async getInputCustomerById(
     @Param('id') id: string,
-    @Body() updateInputDto: UpdateInputDto,
-    @CurrentUser() user: any,
+    @Query('providerId') providerId?: string,
   ) {
-    return this.inputService.updateInput(id, updateInputDto, user.id);
+    return this.inputService.getInputCustomerById(id, providerId);
   }
 
-  @Delete(':id')
-  @ApiOperation({ summary: 'Delete an input product' })
-  async deleteInput(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.inputService.deleteInput(id, user.id);
+  @Get('customers/:id/orders')
+  @ApiOperation({ summary: 'Get customer order history' })
+  async getCustomerOrderHistory(
+    @Param('id') id: string,
+    @Query('providerId') providerId?: string,
+  ) {
+    return this.inputService.getCustomerOrderHistory(id, providerId);
   }
 
   // ============ Input Orders ============
@@ -151,29 +144,36 @@ export class InputController {
     );
   }
 
-  // ============ Input Customers ============
+  // ============ Input Products (Parameterized routes must come last) ============
 
-  @Get('customers/:id')
-  @ApiOperation({ summary: 'Get input customer by ID' })
-  async getInputCustomerById(
-    @Param('id') id: string,
-    @Query('providerId') providerId?: string,
-  ) {
-    return this.inputService.getInputCustomerById(id, providerId);
+  @Get(':id')
+  @ApiOperation({ summary: 'Get input product by ID' })
+  async getInputById(@Param('id') id: string) {
+    return this.inputService.getInputById(id);
   }
 
-  @Get('customers/:id/orders')
-  @ApiOperation({ summary: 'Get customer order history' })
-  async getCustomerOrderHistory(
-    @Param('id') id: string,
-    @Query('providerId') providerId?: string,
+  @Post()
+  @ApiOperation({ summary: 'Create an input product' })
+  async createInput(
+    @Body() createInputDto: CreateInputDto,
+    @CurrentUser() user: any,
   ) {
-    return this.inputService.getCustomerOrderHistory(id, providerId);
+    return this.inputService.createInput(createInputDto, user.id);
   }
 
-  @Get('customers/stats')
-  @ApiOperation({ summary: 'Get customer statistics' })
-  async getCustomerStats(@Query('providerId') providerId?: string) {
-    return this.inputService.getCustomerStats(providerId);
+  @Put(':id')
+  @ApiOperation({ summary: 'Update an input product' })
+  async updateInput(
+    @Param('id') id: string,
+    @Body() updateInputDto: UpdateInputDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.inputService.updateInput(id, updateInputDto, user.id);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Delete an input product' })
+  async deleteInput(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.inputService.deleteInput(id, user.id);
   }
 }

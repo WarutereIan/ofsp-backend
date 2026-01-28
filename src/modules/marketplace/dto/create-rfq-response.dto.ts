@@ -21,4 +21,8 @@ export class CreateRFQResponseDto {
   @IsOptional()
   @IsDateString()
   deliveryDate?: string;
+
+  @ApiProperty({ description: 'Batch ID - required for traceability and aggregation center association' })
+  @IsString()
+  batchId: string; // Required - batch selection is mandatory
 }

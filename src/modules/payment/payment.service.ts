@@ -845,7 +845,7 @@ export class PaymentService {
             }
           }
 
-          await this.transportService.createTransportRequest(
+          const transportRequest = await this.transportService.createTransportRequest(
             {
               type: 'ORDER_DELIVERY',
               description: `Delivery for order #${order.orderNumber}`,
@@ -860,6 +860,26 @@ export class PaymentService {
             },
             order.buyerId,
           );
+
+          // Create activity log for ORDER_DELIVERY transport request creation
+          try {
+            await this.activityLogService.createActivityLog({
+              userId: order.buyerId,
+              action: 'ORDER_DELIVERY_TRANSPORT_CREATED',
+              entityType: 'TRANSPORT',
+              entityId: transportRequest.id,
+              metadata: {
+                requestNumber: transportRequest.requestNumber,
+                orderId: order.id,
+                orderNumber: order.orderNumber,
+                type: 'ORDER_DELIVERY',
+                triggeredBy: 'PAYMENT_CONFIRMED',
+              },
+            });
+          } catch (logError) {
+            console.error('Failed to create activity log for ORDER_DELIVERY transport creation:', logError);
+            // Don't throw - activity log failures shouldn't block transport creation
+          }
         }
       } catch (error) {
         // Log error but don't fail payment confirmation

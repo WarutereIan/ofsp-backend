@@ -167,6 +167,15 @@ export class MarketplaceController {
     return this.marketplaceService.markOrderAsCollected(id, user.id);
   }
 
+  @Put('orders/:id/confirm-delivery')
+  @ApiOperation({ summary: 'Confirm delivery by buyer (for request_transport orders)' })
+  async confirmDeliveryByBuyer(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.confirmDeliveryByBuyer(id, user.id);
+  }
+
   // ============ RFQs ============
 
   @Get('rfqs')

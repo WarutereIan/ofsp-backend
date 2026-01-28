@@ -159,8 +159,12 @@ export class AggregationController {
 
   @Get('inventory')
   @ApiOperation({ summary: 'Get inventory items' })
-  async getInventory(@Query('centerId') centerId?: string) {
-    return this.aggregationService.getInventory(centerId);
+  async getInventory(
+    @Query('centerId') centerId?: string,
+    @Query('farmerId') farmerId?: string,
+    @Query('qualityGrade') qualityGrade?: string,
+  ) {
+    return this.aggregationService.getInventory(centerId, farmerId, qualityGrade);
   }
 
   // ============ Quality Checks ============

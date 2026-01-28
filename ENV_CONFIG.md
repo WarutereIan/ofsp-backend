@@ -60,6 +60,16 @@ SMS_API_URL=
 SMS_SENDER_ID=JIRANI-OFSP
 
 # ============================================
+# WEB PUSH NOTIFICATIONS (VAPID Keys)
+# ============================================
+# Generate VAPID keys using: npx web-push generate-vapid-keys
+# Or use online tool: https://web-push-codelab.glitch.me/
+# Format: Base64 URL-safe encoded strings
+VAPID_PUBLIC_KEY=your-vapid-public-key-here
+VAPID_PRIVATE_KEY=your-vapid-private-key-here
+VAPID_SUBJECT=mailto:admin@ofsp.com
+
+# ============================================
 # PAYMENT GATEWAY (Optional)
 # ============================================
 # M-Pesa/Safaricom

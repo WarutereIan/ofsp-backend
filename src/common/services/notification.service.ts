@@ -1,5 +1,8 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Inject, forwardRef, Optional } from '@nestjs/common';
 import { PrismaService } from '../../modules/prisma/prisma.service';
+import { WebPushService, PushNotificationPayload } from '../../modules/notification/web-push.service';
+
+export type NotificationChannel = 'web-push' | 'email' | 'sms' | 'in-app';
 
 export interface CreateNotificationDto {
   userId: string;
@@ -13,14 +16,22 @@ export interface CreateNotificationDto {
   actionLabel?: string;
   metadata?: any;
   expiresAt?: Date;
+  channels?: NotificationChannel[]; // Channels to send notification through
 }
 
 @Injectable()
 export class NotificationHelperService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Optional() private webPushService?: WebPushService,
+  ) {}
 
   async createNotification(data: CreateNotificationDto) {
-    return this.prisma.notification.create({
+    // Determine channels - default to web-push if not specified
+    const channels = data.channels || ['web-push'];
+
+    // Create notification record in database
+    const notification = await this.prisma.notification.create({
       data: {
         userId: data.userId,
         type: data.type,
@@ -31,10 +42,88 @@ export class NotificationHelperService {
         entityId: data.entityId,
         actionUrl: data.actionUrl,
         actionLabel: data.actionLabel,
-        metadata: data.metadata || {},
+        metadata: {
+          ...(data.metadata || {}),
+          channels, // Store channels in metadata for tracking
+        },
         expiresAt: data.expiresAt,
       },
     });
+
+    // Send through specified channels
+    await this.sendThroughChannels(data, channels);
+
+    return notification;
+  }
+
+  /**
+   * Send notification through specified channels
+   */
+  private async sendThroughChannels(
+    data: CreateNotificationDto,
+    channels: NotificationChannel[],
+  ) {
+    const promises: Promise<any>[] = [];
+
+    for (const channel of channels) {
+      switch (channel) {
+        case 'web-push':
+          if (this.webPushService) {
+            const pushPayload: PushNotificationPayload = {
+              title: data.title,
+              message: data.message,
+              data: {
+                url: data.actionUrl,
+                entityType: data.entityType,
+                entityId: data.entityId,
+                ...(data.metadata || {}),
+              },
+              requireInteraction: data.priority === 'HIGH',
+              tag: data.type, // Group notifications by type
+            };
+
+            // Add action button if actionUrl is provided
+            if (data.actionUrl && data.actionLabel) {
+              pushPayload.actions = [
+                {
+                  action: 'view',
+                  title: data.actionLabel,
+                },
+              ];
+            }
+
+            promises.push(
+              this.webPushService
+                .sendNotificationToUser(data.userId, pushPayload)
+                .catch((error) => {
+                  console.error(`Failed to send web-push notification to user ${data.userId}:`, error);
+                  // Don't throw - channel failures shouldn't block notification creation
+                }),
+            );
+          }
+          break;
+
+        case 'email':
+          // TODO: Implement email channel
+          console.log(`Email channel not yet implemented for notification to user ${data.userId}`);
+          break;
+
+        case 'sms':
+          // TODO: Implement SMS channel
+          console.log(`SMS channel not yet implemented for notification to user ${data.userId}`);
+          break;
+
+        case 'in-app':
+          // In-app notifications are handled by the database record creation above
+          break;
+
+        default:
+          console.warn(`Unknown notification channel: ${channel}`);
+      }
+    }
+
+    // Execute all channel sends in parallel, but don't fail if any channel fails
+    await Promise.allSettled(promises);
   }
 
   async createNotifications(notifications: CreateNotificationDto[]) {

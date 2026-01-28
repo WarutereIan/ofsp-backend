@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { TransportService } from './transport.service';
@@ -240,12 +241,20 @@ export class TransportController {
   }
 
   @Get('pickup-slots/bookings')
-  @ApiOperation({ summary: "Get farmer's pickup bookings" })
-  async getFarmerPickupBookings(
-    @Query('farmerId') farmerId: string,
-    @Query('status') status?: string,
+  @ApiOperation({ summary: "Get pickup bookings - supports both farmer and schedule queries" })
+  async getPickupBookings(
+    @Query('farmerId') farmerId?: string,
     @Query('scheduleId') scheduleId?: string,
+    @Query('status') status?: string,
   ) {
+    // If scheduleId is provided without farmerId, get all bookings for that schedule (for transport providers)
+    if (scheduleId && !farmerId) {
+      return this.transportService.getScheduleBookings(scheduleId, { status });
+    }
+    // Otherwise, get farmer's bookings (existing behavior)
+    if (!farmerId) {
+      throw new BadRequestException('Either farmerId or scheduleId must be provided');
+    }
     return this.transportService.getFarmerPickupBookings(farmerId, {
       status,
       scheduleId,

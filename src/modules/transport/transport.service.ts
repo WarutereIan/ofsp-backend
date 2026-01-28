@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { PickupScheduleStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { NotificationHelperService } from '../../common/services/notification.service';
+import { NotificationHelperService, CreateNotificationDto } from '../../common/services/notification.service';
 import { ActivityLogService } from '../../common/services/activity-log.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import {
@@ -117,11 +117,55 @@ export class TransportService {
 
   async createTransportRequest(data: CreateTransportRequestDto, requesterId: string) {
     try {
+      console.log(`[TRANSPORT_SERVICE] createTransportRequest called:`, {
+        type: data.type,
+        orderId: data.orderId,
+        requesterId,
+        pickupLocation: data.pickupLocation,
+        deliveryLocation: data.deliveryLocation,
+        weight: data.weight,
+      });
+
+      // Check if transport request already exists for this order (prevent duplicates)
+      if (data.orderId) {
+        console.log(`[TRANSPORT_SERVICE] Checking for existing transport request for order ${data.orderId}...`);
+        const existingRequest = await this.prisma.transportRequest.findFirst({
+          where: { 
+            orderId: data.orderId,
+            // Only check for non-cancelled requests
+            status: {
+              not: 'CANCELLED',
+            },
+          },
+          select: {
+            id: true,
+            requestNumber: true,
+            status: true,
+          },
+        });
+
+        if (existingRequest) {
+          console.log(`[TRANSPORT_SERVICE] Existing transport request found:`, {
+            requestId: existingRequest.id,
+            requestNumber: existingRequest.requestNumber,
+            status: existingRequest.status,
+          });
+          throw new BadRequestException(
+            `A transport request already exists for this order. Request #${existingRequest.requestNumber} (Status: ${existingRequest.status})`
+          );
+        } else {
+          console.log(`[TRANSPORT_SERVICE] No existing transport request found. Proceeding with creation.`);
+        }
+      }
+
       // Generate request number
+      console.log(`[TRANSPORT_SERVICE] Generating transport request number...`);
       const requestNumber = await this.prisma.$queryRaw<Array<{ generate_transport_request_number: string }>>`
         SELECT generate_transport_request_number() as generate_transport_request_number
       `;
+      console.log(`[TRANSPORT_SERVICE] Generated request number: ${requestNumber[0].generate_transport_request_number}`);
 
+      console.log(`[TRANSPORT_SERVICE] Creating transport request in database...`);
       const request = await this.prisma.transportRequest.create({
         data: {
           requesterId,
@@ -154,23 +198,111 @@ export class TransportService {
         },
       });
 
-      // Create activity log
-      await this.activityLogService.logTransportCreated(request, requesterId);
+      console.log(`[TRANSPORT_SERVICE] Transport request created successfully:`, {
+        requestId: request.id,
+        requestNumber: request.requestNumber,
+        type: request.type,
+        status: request.status,
+        orderId: request.orderId,
+      });
 
-      // Update order fulfillment type if transport request is linked to an order
+      // Create activity log
+      console.log(`[TRANSPORT_SERVICE] Creating activity log for transport request ${request.requestNumber}...`);
+      await this.activityLogService.logTransportCreated(request, requesterId);
+      console.log(`[TRANSPORT_SERVICE] Activity log created successfully`);
+
+      // Update order fulfillment type and delivery details if transport request is linked to an order
       if (data.orderId) {
         try {
+          console.log(`[TRANSPORT_SERVICE] Updating order ${data.orderId} fulfillment type and delivery details...`);
+          const orderUpdateData: any = { fulfillmentType: 'request_transport' };
+          
+          // Update delivery address and county if provided in transport request
+          // This is especially important for orders past processing stage where fulfillment type is being changed
+          if (data.deliveryLocation) {
+            orderUpdateData.deliveryAddress = data.deliveryLocation;
+          }
+          if (data.deliveryCounty) {
+            orderUpdateData.deliveryCounty = data.deliveryCounty;
+          }
+          if (data.deliveryCoordinates) {
+            orderUpdateData.deliveryCoordinates = data.deliveryCoordinates;
+          }
+
           await this.prisma.marketplaceOrder.update({
             where: { id: data.orderId },
-            data: { fulfillmentType: 'request_transport' },
+            data: orderUpdateData,
           });
+          console.log(`[TRANSPORT_SERVICE] Order ${data.orderId} updated successfully with fulfillment type: request_transport`);
         } catch (error) {
-          this.logger.warn(`Failed to update order fulfillment type for order ${data.orderId}:`, error);
+          this.logger.warn(`[TRANSPORT_SERVICE] Failed to update order fulfillment type for order ${data.orderId}:`, error);
         }
       }
 
+      // Create notifications based on transport type
+      try {
+        console.log(`[TRANSPORT_SERVICE] Creating notifications for transport request ${request.requestNumber}...`);
+        if (data.type === 'ORDER_DELIVERY' && request.order) {
+          // Notify buyer (requester) that transport request was created
+          console.log(`[TRANSPORT_SERVICE] Sending ORDER_DELIVERY notification to buyer (requesterId: ${requesterId})...`);
+          await this.notificationHelperService.createNotification({
+            userId: requesterId,
+            type: 'TRANSPORT',
+            title: 'Delivery Arranged',
+            message: `Transport request #${request.requestNumber} created for order #${request.order.orderNumber}. Waiting for provider assignment.`,
+            priority: 'MEDIUM',
+            entityType: 'TRANSPORT',
+            entityId: request.id,
+            actionUrl: `/transport/${request.id}`,
+            actionLabel: 'View Request',
+            metadata: {
+              requestNumber: request.requestNumber,
+              orderNumber: request.order.orderNumber,
+              orderId: request.order.id,
+              type: 'ORDER_DELIVERY',
+            },
+          });
+          console.log(`[TRANSPORT_SERVICE] Notification sent successfully to buyer`);
+
+          // Notify all transport providers about new ORDER_DELIVERY request
+          // Note: In a real implementation, you might want to fetch active providers
+          // For now, providers will see it in their pending requests list
+          console.log(`[TRANSPORT_SERVICE] Transport providers will see request in pending requests list`);
+        } else {
+          // For other transport types, notify requester
+          console.log(`[TRANSPORT_SERVICE] Sending notification for ${data.type} transport request...`);
+          await this.notificationHelperService.createNotification({
+            userId: requesterId,
+            type: 'TRANSPORT',
+            title: 'Transport Request Created',
+            message: `Transport request #${request.requestNumber} has been created. Waiting for provider assignment.`,
+            priority: 'MEDIUM',
+            entityType: 'TRANSPORT',
+            entityId: request.id,
+            actionUrl: `/transport/${request.id}`,
+            actionLabel: 'View Request',
+            metadata: {
+              requestNumber: request.requestNumber,
+              type: data.type,
+            },
+          });
+          console.log(`[TRANSPORT_SERVICE] Notification sent successfully`);
+        }
+      } catch (error) {
+        this.logger.warn(`[TRANSPORT_SERVICE] Failed to create notification for transport request ${request.id}:`, error);
+        // Don't throw - notification failures shouldn't block request creation
+      }
+
+      console.log(`[TRANSPORT_SERVICE] createTransportRequest completed successfully for request ${request.requestNumber}`);
       return request;
     } catch (error) {
+      console.error(`[TRANSPORT_SERVICE] ERROR: createTransportRequest failed:`, {
+        requesterId,
+        orderId: data.orderId ?? 'none',
+        type: data.type,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       this.logger.error(
         `createTransportRequest failed (requesterId=${requesterId}, orderId=${data.orderId ?? 'none'})`,
         (error as Error)?.stack ?? String(error),
@@ -201,6 +333,28 @@ export class TransportService {
     // If provider is assigned, only requester or assigned provider can update
     if (request.providerId && !isRequester && !isAssignedProvider) {
       throw new BadRequestException('You can only update your own transport requests');
+    }
+
+    // For ORDER_DELIVERY requests, verify order is in RELEASED status before allowing collection
+    // This ensures stock out has been recorded by aggregation officer before transport provider can collect
+    if (request.orderId && request.type === 'ORDER_DELIVERY' && 
+        (newStatus === 'IN_TRANSIT_PICKUP' || newStatus === 'IN_TRANSIT_DELIVERY') &&
+        oldStatus !== 'IN_TRANSIT_PICKUP' && oldStatus !== 'IN_TRANSIT_DELIVERY') {
+      // Fetch order to check status if not already loaded
+      const order = request.order || await this.prisma.marketplaceOrder.findUnique({
+        where: { id: request.orderId },
+        select: { id: true, status: true, orderNumber: true },
+      });
+
+      if (!order) {
+        throw new NotFoundException(`Order with ID ${request.orderId} not found`);
+      }
+
+      if (order.status !== 'RELEASED') {
+        throw new BadRequestException(
+          `Cannot mark order as collected. Order #${order.orderNumber} must be in RELEASED status (stock out must be recorded first by aggregation officer). Current order status: ${order.status}`
+        );
+      }
     }
 
     const updateData: any = {
@@ -293,6 +447,7 @@ export class TransportService {
           // For now, we'll update when transport goes in transit
         } else if ((newStatus === 'IN_TRANSIT_PICKUP' || newStatus === 'IN_TRANSIT_DELIVERY') && 
                    oldStatus !== 'IN_TRANSIT_PICKUP' && oldStatus !== 'IN_TRANSIT_DELIVERY') {
+          // Order status validation (RELEASED check) already done at the beginning of the function
           // Transport in transit - update order to IN_TRANSIT
           await this.marketplaceService.updateOrderStatus(
             request.orderId,
@@ -308,28 +463,102 @@ export class TransportService {
           );
         }
       } catch (error) {
+        // Re-throw BadRequestException (validation errors) to show proper error message
+        if (error instanceof BadRequestException) {
+          throw error;
+        }
         this.logger.error(
           `Failed to update order status for ORDER_DELIVERY (requestId=${id}, orderId=${request.orderId}, newStatus=${newStatus})`,
           (error as Error)?.stack ?? String(error),
         );
-        // Don't re-throw - allow transport status to update even if order status update fails
+        // Don't re-throw other errors - allow transport status to update even if order status update fails
       }
     }
 
-    // Create notifications
-    if (request.requesterId) {
-      await this.notificationHelperService.createNotification({
-        userId: request.requesterId,
-        type: 'TRANSPORT',
-        title: `Transport Request ${newStatus}`,
-        message: `Transport request #${request.requestNumber} status updated to ${newStatus}`,
-        priority: ['DELIVERED', 'CANCELLED'].includes(newStatus) ? 'HIGH' : 'MEDIUM',
-        entityType: 'TRANSPORT',
-        entityId: request.id,
-        actionUrl: `/transport/${request.id}`,
-        actionLabel: 'View Request',
-        metadata: { requestNumber: request.requestNumber, status: newStatus },
-      });
+    // Create notifications based on status and transport type
+    try {
+      const notifications: CreateNotificationDto[] = [];
+
+      // Notify requester
+      if (request.requesterId) {
+        let title = `Transport Request ${newStatus}`;
+        let message = `Transport request #${request.requestNumber} status updated to ${newStatus}`;
+
+        // Customize messages for ORDER_DELIVERY
+        if (request.type === 'ORDER_DELIVERY' && request.order) {
+          if (newStatus === 'ACCEPTED') {
+            title = 'Delivery Provider Assigned';
+            message = `A transport provider has been assigned for order #${request.order.orderNumber}. Delivery will begin soon.`;
+          } else if (newStatus === 'IN_TRANSIT_PICKUP' || newStatus === 'IN_TRANSIT_DELIVERY') {
+            title = 'Order In Transit';
+            message = `Your order #${request.order.orderNumber} is now in transit. Track delivery in real-time.`;
+          } else if (newStatus === 'DELIVERED') {
+            title = 'Order Delivered';
+            message = `Your order #${request.order.orderNumber} has been delivered successfully.`;
+          } else if (newStatus === 'COMPLETED') {
+            title = 'Delivery Completed';
+            message = `Delivery for order #${request.order.orderNumber} has been completed.`;
+          }
+        }
+
+        notifications.push({
+          userId: request.requesterId,
+          type: 'TRANSPORT',
+          title,
+          message,
+          priority: ['DELIVERED', 'CANCELLED', 'COMPLETED'].includes(newStatus) ? 'HIGH' : 'MEDIUM',
+          entityType: 'TRANSPORT',
+          entityId: request.id,
+          actionUrl: `/transport/${request.id}`,
+          actionLabel: 'View Request',
+          metadata: {
+            requestNumber: request.requestNumber,
+            status: newStatus,
+            orderId: request.orderId,
+            orderNumber: request.order?.orderNumber,
+            type: request.type,
+          },
+        });
+      }
+
+      // Notify provider if assigned
+      if (request.providerId && (newStatus === 'IN_TRANSIT_PICKUP' || newStatus === 'IN_TRANSIT_DELIVERY' || newStatus === 'DELIVERED')) {
+        let providerMessage = `Transport request #${request.requestNumber} status updated to ${newStatus}`;
+        
+        if (request.type === 'ORDER_DELIVERY' && request.order) {
+          if (newStatus === 'IN_TRANSIT_PICKUP' || newStatus === 'IN_TRANSIT_DELIVERY') {
+            providerMessage = `Order #${request.order.orderNumber} is in transit. Continue tracking and updating location.`;
+          } else if (newStatus === 'DELIVERED') {
+            providerMessage = `Order #${request.order.orderNumber} has been delivered. Mark as complete when confirmed.`;
+          }
+        }
+
+        notifications.push({
+          userId: request.providerId,
+          type: 'TRANSPORT',
+          title: `Transport Status: ${newStatus}`,
+          message: providerMessage,
+          priority: newStatus === 'DELIVERED' ? 'HIGH' : 'MEDIUM',
+          entityType: 'TRANSPORT',
+          entityId: request.id,
+          actionUrl: `/transport/${request.id}`,
+          actionLabel: 'View Request',
+          metadata: {
+            requestNumber: request.requestNumber,
+            status: newStatus,
+            orderId: request.orderId,
+            orderNumber: request.order?.orderNumber,
+            type: request.type,
+          },
+        });
+      }
+
+      if (notifications.length > 0) {
+        await this.notificationHelperService.createNotifications(notifications);
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to create notifications for transport status update (requestId=${id}):`, error);
+      // Don't throw - notification failures shouldn't block status update
     }
 
     // Create activity log
@@ -400,8 +629,30 @@ export class TransportService {
     }
 
     // Create notifications for requester and provider
-    await this.notificationHelperService.createNotifications([
-      {
+    const notifications: CreateNotificationDto[] = [];
+
+    // Customize notification for ORDER_DELIVERY
+    if (request.type === 'ORDER_DELIVERY' && request.order) {
+      notifications.push({
+        userId: request.requesterId,
+        type: 'TRANSPORT',
+        title: 'Delivery Provider Assigned',
+        message: `A transport provider has been assigned for order #${request.order.orderNumber}. They will collect and deliver your order.`,
+        priority: 'HIGH',
+        entityType: 'TRANSPORT',
+        entityId: request.id,
+        actionUrl: `/transport/${request.id}`,
+        actionLabel: 'Track Delivery',
+        metadata: {
+          requestNumber: request.requestNumber,
+          providerId,
+          orderId: request.orderId,
+          orderNumber: request.order.orderNumber,
+          type: 'ORDER_DELIVERY',
+        },
+      });
+    } else {
+      notifications.push({
         userId: request.requesterId,
         type: 'TRANSPORT',
         title: 'Transport Request Accepted',
@@ -412,20 +663,44 @@ export class TransportService {
         actionUrl: `/transport/${request.id}`,
         actionLabel: 'View Request',
         metadata: { requestNumber: request.requestNumber, providerId },
-      },
-      {
+      });
+    }
+
+    // Add provider notification
+    if (request.type === 'ORDER_DELIVERY' && request.order) {
+      notifications.push({
         userId: providerId,
         type: 'TRANSPORT',
-        title: 'Transport Request Accepted',
-        message: `You have accepted transport request #${request.requestNumber}`,
-        priority: 'MEDIUM',
+        title: 'Order Delivery Assigned',
+        message: `You have been assigned to deliver order #${request.order.orderNumber}. Collect from aggregation center and deliver to buyer.`,
+        priority: 'HIGH',
+        entityType: 'TRANSPORT',
+        entityId: request.id,
+        actionUrl: `/transport/${request.id}`,
+        actionLabel: 'View Request',
+        metadata: {
+          requestNumber: request.requestNumber,
+          orderId: request.orderId,
+          orderNumber: request.order.orderNumber,
+          type: 'ORDER_DELIVERY',
+        },
+      });
+    } else {
+      notifications.push({
+        userId: providerId,
+        type: 'TRANSPORT',
+        title: 'Request Accepted',
+        message: `You have accepted transport request #${request.requestNumber}. Proceed to pickup`,
+        priority: 'HIGH',
         entityType: 'TRANSPORT',
         entityId: request.id,
         actionUrl: `/transport/${request.id}`,
         actionLabel: 'View Request',
         metadata: { requestNumber: request.requestNumber },
-      },
-    ]);
+      });
+    }
+
+    await this.notificationHelperService.createNotifications(notifications);
 
     return updatedRequest;
   }
@@ -1152,6 +1427,58 @@ export class TransportService {
       throw new BadRequestException('Cannot confirm cancelled booking');
     }
 
+    // Validate that scheduled pickup time has arrived
+    const schedule = booking.slot?.schedule;
+    
+    if (schedule) {
+      const scheduledDate = schedule.scheduledDate;
+      const scheduledTime = schedule.scheduledTime;
+      
+      if (scheduledDate && scheduledTime) {
+        try {
+          // Parse scheduled date and time
+          let scheduledDateTime: Date;
+          
+          // scheduledTime might be in ISO format or HH:mm format
+          if (scheduledTime.includes('T')) {
+            // Full ISO datetime string
+            scheduledDateTime = new Date(scheduledTime);
+          } else if (scheduledTime.includes(':') && scheduledTime.length === 5) {
+            // HH:mm format, combine with scheduledDate
+            const dateStr = scheduledDate instanceof Date 
+              ? scheduledDate.toISOString().split('T')[0]
+              : scheduledDate.toString().split('T')[0];
+            scheduledDateTime = new Date(`${dateStr}T${scheduledTime}`);
+          } else {
+            // Fallback: use scheduledDate only
+            scheduledDateTime = scheduledDate instanceof Date 
+              ? scheduledDate 
+              : new Date(scheduledDate);
+          }
+          
+          const now = new Date();
+          
+          if (scheduledDateTime > now) {
+            this.logger.warn(
+              `Attempt to confirm pickup before scheduled time: bookingId=${bookingId}, farmerId=${farmerId}, scheduledDateTime=${scheduledDateTime.toISOString()}, now=${now.toISOString()}`,
+            );
+            throw new BadRequestException(
+              `Cannot confirm pickup before the scheduled time. Scheduled time: ${scheduledDateTime.toLocaleString()}`
+            );
+          }
+        } catch (error) {
+          if (error instanceof BadRequestException) {
+            throw error;
+          }
+          this.logger.error(
+            `Error parsing scheduled time for pickup confirmation: bookingId=${bookingId}, farmerId=${farmerId}`,
+            (error as Error)?.stack ?? String(error),
+          );
+          // Don't block confirmation if there's an error parsing the time
+        }
+      }
+    }
+
     // Generate batch ID and QR code (per lifecycle: batch traceability starts)
     let batchId: string;
     let qrCode: string;
@@ -1495,6 +1822,55 @@ export class TransportService {
     return receipt;
   }
 
+  async getScheduleBookings(scheduleId: string, filters?: {
+    status?: string;
+  }) {
+    // Verify schedule exists and get provider info
+    const schedule = await this.getPickupScheduleById(scheduleId);
+    
+    const where: any = {
+      scheduleId,
+    };
+
+    if (filters?.status) {
+      where.status = filters.status;
+    }
+
+    const bookings = await this.prisma.pickupSlotBooking.findMany({
+      where,
+      include: {
+        farmer: {
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            profile: {
+              select: {
+                firstName: true,
+                lastName: true,
+              },
+            },
+          },
+        },
+        slot: {
+          include: {
+            location: true,
+          },
+        },
+        pickupReceipt: true,
+      },
+      orderBy: { bookedAt: 'desc' },
+    });
+
+    // Transform to include farmer name
+    return bookings.map(booking => ({
+      ...booking,
+      farmerName: booking.farmer.profile
+        ? `${booking.farmer.profile.firstName} ${booking.farmer.profile.lastName}`
+        : booking.farmer.email || booking.farmer.phone,
+    }));
+  }
+
   async getFarmerPickupBookings(farmerId: string, filters?: {
     status?: string;
     scheduleId?: string;
@@ -1572,8 +1948,47 @@ export class TransportService {
           location: data.location,
           status: data.status,
           trackingUpdateId: trackingUpdate.id,
+          coordinates: data.coordinates,
+          orderId: request.orderId,
+          orderNumber: request.order?.orderNumber,
+          type: request.type,
         },
       });
+
+      // Create notification for requester (buyer) about location update
+      try {
+        if (request.requesterId) {
+          let message = `Transport request #${request.requestNumber} location updated: ${data.location}`;
+          
+          if (request.type === 'ORDER_DELIVERY' && request.order) {
+            message = `Order #${request.order.orderNumber} location update: ${data.location}`;
+          }
+
+          await this.notificationHelperService.createNotification({
+            userId: request.requesterId,
+            type: 'TRANSPORT',
+            title: 'Location Update',
+            message,
+            priority: 'LOW',
+            entityType: 'TRANSPORT',
+            entityId: requestId,
+            actionUrl: `/transport/${requestId}`,
+            actionLabel: 'Track Delivery',
+            metadata: {
+              requestNumber: request.requestNumber,
+              location: data.location,
+              coordinates: data.coordinates,
+              trackingUpdateId: trackingUpdate.id,
+              orderId: request.orderId,
+              orderNumber: request.order?.orderNumber,
+              type: request.type,
+            },
+          });
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to create notification for tracking update (requestId=${requestId}):`, error);
+        // Don't throw - notification failures shouldn't block tracking update
+      }
 
       return trackingUpdate;
     } catch (error) {

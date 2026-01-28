@@ -1058,11 +1058,20 @@ export class AggregationService {
     // Update marketplace order status and mark as stock out recorded if stock out is for an order
     if (validOrderId) {
       try {
-        // Update order status
-        if (stockTransaction.order) {
+        // Get current order status to determine next status
+        const order = await this.prisma.marketplaceOrder.findUnique({
+          where: { id: validOrderId },
+          select: { status: true, orderNumber: true },
+        });
+
+        if (order && stockTransaction.order) {
+          // If order is READY_FOR_COLLECTION, set status to RELEASED (stock released for collection)
+          // Otherwise, use the existing flow (e.g., OUT_FOR_DELIVERY for other statuses)
+          const nextStatus = order.status === 'READY_FOR_COLLECTION' ? 'RELEASED' : 'OUT_FOR_DELIVERY';
+          
           await this.marketplaceService.updateOrderStatus(
             validOrderId,
-            { status: 'OUT_FOR_DELIVERY' },
+            { status: nextStatus },
             userId,
           );
         }
@@ -1130,8 +1139,13 @@ export class AggregationService {
 
   // ============ Inventory ============
 
-  async getInventory(centerId?: string) {
-    const where = centerId ? { centerId } : {};
+  async getInventory(centerId?: string, farmerId?: string, qualityGrade?: string) {
+    const where: any = {};
+    if (centerId) where.centerId = centerId;
+    if (farmerId) where.farmerId = farmerId;
+    if (qualityGrade) where.qualityGrade = qualityGrade;
+    // Only return items that have been checked in (have stockInDate and status is FRESH or similar)
+    where.status = { in: ['FRESH', 'AGING'] }; // Only show available stock
 
     return this.prisma.inventoryItem.findMany({
       where,

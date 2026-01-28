@@ -52,6 +52,7 @@ model User {
   // Relations
   refreshTokens             RefreshToken[]
   notifications             Notification[]
+  pushSubscriptions         PushSubscription[]
   activityLogs              ActivityLog[]
   producings                ProduceListing[]
   orders                    MarketplaceOrder[]  @relation("BuyerOrders")
@@ -202,6 +203,28 @@ model Notification {
   @@map("notifications")
 }
 
+model PushSubscription {
+  id String @id @default(uuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Web Push Subscription Data
+  endpoint String @unique // Push service endpoint URL
+  p256dh   String // User's public key
+  auth     String // User's auth secret
+
+  // Metadata
+  userAgent String? // Browser user agent
+  deviceInfo Json? // Additional device information
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
 model ActivityLog {
   id String @id @default(uuid())
 
@@ -256,6 +279,8 @@ enum MarketplaceOrderStatus {
   READY_TO_PROCESS
   PROCESSING
   READY_FOR_COLLECTION
+  RELEASED
+  COLLECTED
   IN_TRANSIT
   AT_AGGREGATION
   QUALITY_CHECKED

@@ -50,7 +50,9 @@ export class MarketplaceService {
     PAYMENT_SECURED: ['READY_TO_PROCESS', 'IN_TRANSIT', 'CANCELLED'],
     READY_TO_PROCESS: ['PROCESSING', 'CANCELLED'], // Aggregation center can start processing
     PROCESSING: ['READY_FOR_COLLECTION', 'CANCELLED'], // Processing complete, ready for buyer collection
-    READY_FOR_COLLECTION: ['OUT_FOR_DELIVERY', 'CANCELLED'], // Buyer can collect or arrange delivery
+    READY_FOR_COLLECTION: ['RELEASED', 'CANCELLED'], // Stock out can be recorded to release stock
+    RELEASED: ['COLLECTED', 'CANCELLED'], // Stock released, buyer can collect order
+    COLLECTED: ['OUT_FOR_DELIVERY', 'COMPLETED', 'CANCELLED'], // After collection: delivery if request_transport, or completed if self_pickup
     IN_TRANSIT: ['AT_AGGREGATION', 'CANCELLED'],
     AT_AGGREGATION: ['QUALITY_CHECKED', 'CANCELLED'],
     QUALITY_CHECKED: ['QUALITY_APPROVED', 'QUALITY_REJECTED'],
@@ -249,6 +251,7 @@ export class MarketplaceService {
     // Orders can be associated through:
     // 1. Direct stock transactions (for stock-out orders)
     // 2. Listing's batchId matching a stock transaction at this center (for orders in processing)
+    // 3. Order's batchId matching an InventoryItem at this center (for supplier offer orders)
     if (filters?.centerId) {
       // Find batchIds from stock transactions at this center
       const stockTransactions = await this.prisma.stockTransaction.findMany({
@@ -262,9 +265,26 @@ export class MarketplaceService {
         distinct: ['batchId'],
       });
 
-      const batchIds = stockTransactions
+      const stockTransactionBatchIds = stockTransactions
         .map((st) => st.batchId)
         .filter((id): id is string => id !== null);
+
+      // Find batchIds from inventory items at this center (for supplier offer orders)
+      const inventoryItems = await this.prisma.inventoryItem.findMany({
+        where: {
+          centerId: filters.centerId,
+        },
+        select: {
+          batchId: true,
+        },
+      });
+
+      const inventoryBatchIds = inventoryItems
+        .map((item) => item.batchId)
+        .filter((id): id is string => id !== null);
+
+      // Combine all batchIds that are associated with this center
+      const allCenterBatchIds = [...new Set([...stockTransactionBatchIds, ...inventoryBatchIds])];
 
       // Build OR condition for center association
       const centerConditions: any[] = [
@@ -277,13 +297,23 @@ export class MarketplaceService {
         },
       ];
 
-      // Add listing batchId condition if we have batchIds
-      if (batchIds.length > 0) {
+      // Add listing batchId condition if we have batchIds from stock transactions
+      if (stockTransactionBatchIds.length > 0) {
         centerConditions.push({
           listing: {
             batchId: {
-              in: batchIds,
+              in: stockTransactionBatchIds,
             },
+          },
+        });
+      }
+
+      // Add order batchId condition if we have batchIds from inventory items
+      // This covers orders created from supplier offers with batch selection
+      if (inventoryBatchIds.length > 0) {
+        centerConditions.push({
+          batchId: {
+            in: inventoryBatchIds,
           },
         });
       }
@@ -680,7 +710,7 @@ export class MarketplaceService {
       // Escrow will be created when payment is made, not here
       // But we can prepare for it
     } else if (newStatus === 'PROCESSING') {
-      // When order starts processing, deduct quantity from listing availableQuantity
+      // When order starts processing, deduct quantity from listing availableQuantity (for listing-based orders)
       if (order.listingId) {
         try {
           const listing = await this.prisma.produceListing.findUnique({
@@ -698,6 +728,226 @@ export class MarketplaceService {
           console.error('Failed to update listing availableQuantity:', error);
           // Don't fail the order status update if listing update fails
         }
+      }
+
+      // When order starts processing, deduct quantity from batch (InventoryItem) for batch-based orders
+      // This applies to orders from supplier offers and RFQ responses
+      if (order.batchId) {
+        try {
+          const inventoryItem = await this.prisma.inventoryItem.findUnique({
+            where: { batchId: order.batchId },
+          });
+          
+          if (inventoryItem) {
+            // Verify order quantity doesn't exceed available batch quantity
+            if (order.quantity > inventoryItem.quantity) {
+              throw new BadRequestException(
+                `Order quantity (${order.quantity} kg) exceeds available batch quantity (${inventoryItem.quantity} kg) for batch ${order.batchId}`
+              );
+            }
+
+            const newBatchQuantity = Math.max(0, inventoryItem.quantity - order.quantity);
+            await this.prisma.inventoryItem.update({
+              where: { batchId: order.batchId },
+              data: { quantity: newBatchQuantity },
+            });
+            console.log(`Deducted ${order.quantity} kg from batch ${order.batchId}. New available: ${newBatchQuantity} kg`);
+          } else {
+            console.warn(`Batch ${order.batchId} not found in inventory when processing order ${order.orderNumber}`);
+          }
+        } catch (error) {
+          console.error('Failed to update batch quantity:', error);
+          // Re-throw if it's a validation error, otherwise log and continue
+          if (error instanceof BadRequestException) {
+            throw error;
+          }
+          // Don't fail the order status update if batch update fails (for non-critical errors)
+        }
+      }
+
+      // Create transport request if fulfillment type is request_transport
+      // This ensures transport providers can see the request once processing starts
+      console.log(`[TRANSPORT_REQUEST_FLOW] Order ${order.orderNumber} (${id}) marked as PROCESSING. Checking transport request creation...`);
+      console.log(`[TRANSPORT_REQUEST_FLOW] Order details:`, {
+        fulfillmentType: order.fulfillmentType,
+        deliveryAddress: order.deliveryAddress ? 'present' : 'missing',
+        deliveryCounty: order.deliveryCounty ? 'present' : 'missing',
+        deliveryCoordinates: order.deliveryCoordinates ? 'present' : 'missing',
+        transportServiceAvailable: !!this.transportService,
+      });
+
+      if (order.fulfillmentType === 'request_transport' && order.deliveryAddress && order.deliveryCounty && this.transportService) {
+        console.log(`[TRANSPORT_REQUEST_FLOW] Conditions met. Proceeding with transport request creation for order ${order.orderNumber}`);
+        try {
+          // Check if transport request already exists for this order
+          console.log(`[TRANSPORT_REQUEST_FLOW] Checking for existing transport request for order ${order.orderNumber}...`);
+          const existingRequest = await this.prisma.transportRequest.findFirst({
+            where: { orderId: id },
+          });
+
+          if (existingRequest) {
+            console.log(`[TRANSPORT_REQUEST_FLOW] Existing transport request found for order ${order.orderNumber}:`, {
+              requestId: existingRequest.id,
+              requestNumber: existingRequest.requestNumber,
+              status: existingRequest.status,
+            });
+            console.log(`[TRANSPORT_REQUEST_FLOW] Skipping transport request creation - duplicate prevention`);
+          } else {
+            console.log(`[TRANSPORT_REQUEST_FLOW] No existing transport request found. Creating new one for order ${order.orderNumber}`);
+            
+            // Get aggregation center location from order's listing or stock transactions
+            let pickupLocation = 'Aggregation Center';
+            let pickupCounty = order.deliveryCounty; // Fallback
+
+            console.log(`[TRANSPORT_REQUEST_FLOW] Looking up aggregation center location for order ${order.orderNumber}...`);
+
+            // Try to get center from listing's batch
+            if (order.listingId) {
+              console.log(`[TRANSPORT_REQUEST_FLOW] Order has listingId: ${order.listingId}. Checking listing's batch...`);
+              const listing = await this.prisma.produceListing.findUnique({
+                where: { id: order.listingId },
+                select: { batchId: true },
+              });
+
+              if (listing?.batchId) {
+                console.log(`[TRANSPORT_REQUEST_FLOW] Listing has batchId: ${listing.batchId}. Querying stock transactions...`);
+                // Query StockTransaction using the listing's batchId
+                const stockTx = await this.prisma.stockTransaction.findFirst({
+                  where: {
+                    batchId: listing.batchId,
+                    type: 'STOCK_IN',
+                  },
+                  include: {
+                    center: true,
+                  },
+                  orderBy: { createdAt: 'desc' },
+                });
+
+                if (stockTx?.center) {
+                  pickupLocation = stockTx.center.location || stockTx.center.name;
+                  pickupCounty = stockTx.center.county;
+                  console.log(`[TRANSPORT_REQUEST_FLOW] Found center from listing's batch:`, {
+                    centerId: stockTx.center.id,
+                    centerName: stockTx.center.name,
+                    location: pickupLocation,
+                    county: pickupCounty,
+                  });
+                } else {
+                  console.log(`[TRANSPORT_REQUEST_FLOW] No stock transaction found for listing's batchId: ${listing.batchId}`);
+                }
+              } else {
+                console.log(`[TRANSPORT_REQUEST_FLOW] Listing ${order.listingId} has no batchId`);
+              }
+            } else {
+              console.log(`[TRANSPORT_REQUEST_FLOW] Order ${order.orderNumber} has no listingId`);
+            }
+
+            // If still no center found, try to get from order's stock transactions
+            if (pickupLocation === 'Aggregation Center') {
+              console.log(`[TRANSPORT_REQUEST_FLOW] Pickup location still default. Checking order's direct stock transactions...`);
+              const stockTx = await this.prisma.stockTransaction.findFirst({
+                where: {
+                  orderId: id,
+                  type: 'STOCK_IN',
+                },
+                include: {
+                  center: true,
+                },
+                orderBy: { createdAt: 'desc' },
+              });
+
+              if (stockTx?.center) {
+                pickupLocation = stockTx.center.location || stockTx.center.name;
+                pickupCounty = stockTx.center.county;
+                console.log(`[TRANSPORT_REQUEST_FLOW] Found center from order's stock transaction:`, {
+                  centerId: stockTx.center.id,
+                  centerName: stockTx.center.name,
+                  location: pickupLocation,
+                  county: pickupCounty,
+                });
+              } else {
+                console.log(`[TRANSPORT_REQUEST_FLOW] No stock transaction found for order ${order.orderNumber}. Using fallback location.`);
+              }
+            }
+
+            console.log(`[TRANSPORT_REQUEST_FLOW] Final pickup location determined:`, {
+              pickupLocation,
+              pickupCounty,
+            });
+
+            console.log(`[TRANSPORT_REQUEST_FLOW] Creating transport request with data:`, {
+              type: 'ORDER_DELIVERY',
+              orderId: order.id,
+              orderNumber: order.orderNumber,
+              requesterId: order.buyerId,
+              pickupLocation,
+              pickupCounty,
+              deliveryLocation: order.deliveryAddress,
+              deliveryCounty: order.deliveryCounty,
+              weight: order.quantity,
+            });
+
+            const transportRequest = await this.transportService.createTransportRequest(
+              {
+                type: 'ORDER_DELIVERY',
+                description: `Delivery for order #${order.orderNumber}`,
+                requesterType: 'buyer',
+                pickupLocation,
+                pickupCounty,
+                deliveryLocation: order.deliveryAddress,
+                deliveryCounty: order.deliveryCounty,
+                deliveryCoordinates: order.deliveryCoordinates || undefined,
+                weight: order.quantity,
+                orderId: order.id,
+              },
+              order.buyerId,
+            );
+
+            console.log(`[TRANSPORT_REQUEST_FLOW] Transport request created successfully:`, {
+              requestId: transportRequest.id,
+              requestNumber: transportRequest.requestNumber,
+              orderId: order.id,
+              orderNumber: order.orderNumber,
+            });
+
+            // Create activity log for ORDER_DELIVERY transport request creation
+            try {
+              console.log(`[TRANSPORT_REQUEST_FLOW] Creating activity log for transport request ${transportRequest.requestNumber}...`);
+              await this.activityLogService.createActivityLog({
+                userId: order.buyerId,
+                action: 'ORDER_DELIVERY_TRANSPORT_CREATED',
+                entityType: 'TRANSPORT',
+                entityId: transportRequest.id,
+                metadata: {
+                  requestNumber: transportRequest.requestNumber,
+                  orderId: order.id,
+                  orderNumber: order.orderNumber,
+                  type: 'ORDER_DELIVERY',
+                  triggeredBy: 'ORDER_PROCESSING_STARTED',
+                },
+              });
+              console.log(`[TRANSPORT_REQUEST_FLOW] Activity log created successfully`);
+            } catch (logError) {
+              console.error(`[TRANSPORT_REQUEST_FLOW] Failed to create activity log for ORDER_DELIVERY transport creation:`, logError);
+              // Don't throw - activity log failures shouldn't block transport creation
+            }
+          }
+        } catch (error) {
+          // Log error but don't fail order status update
+          console.error(`[TRANSPORT_REQUEST_FLOW] ERROR: Failed to create transport request when order processing started for order ${order.orderNumber}:`, {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+            orderId: id,
+            orderNumber: order.orderNumber,
+          });
+        }
+      } else {
+        console.log(`[TRANSPORT_REQUEST_FLOW] Conditions NOT met for transport request creation. Skipping.`, {
+          fulfillmentType: order.fulfillmentType,
+          hasDeliveryAddress: !!order.deliveryAddress,
+          hasDeliveryCounty: !!order.deliveryCounty,
+          hasTransportService: !!this.transportService,
+        });
       }
     } else if (newStatus === 'DELIVERED') {
       updateData.actualDeliveryDate = new Date();
@@ -805,15 +1055,29 @@ export class MarketplaceService {
       throw new BadRequestException('Only the buyer can mark this order as collected');
     }
 
-    // Verify order is ready for collection (stockOutRecorded must be true)
-    if (!order.stockOutRecorded) {
-      throw new BadRequestException('Order is not ready for collection. Stock out must be recorded first.');
+    // Verify order is released (stock out recorded by aggregation officer)
+    if (order.status !== 'RELEASED') {
+      throw new BadRequestException(
+        `Cannot mark order as collected. Order #${order.orderNumber} must be in RELEASED status (stock out must be recorded first by aggregation officer). Current order status: ${order.status}`
+      );
     }
 
-    // Update order to mark as collected
+    // Update status history
+    const statusHistory = Array.isArray(order.statusHistory) ? order.statusHistory : [];
+    statusHistory.push({
+      status: 'COLLECTED',
+      timestamp: new Date().toISOString(),
+      changedBy: userId,
+    });
+
+    // Update order status to COLLECTED and set collected flag
     const updatedOrder = await this.prisma.marketplaceOrder.update({
       where: { id },
-      data: { collected: true },
+      data: { 
+        status: 'COLLECTED' as any,
+        collected: true,
+        statusHistory: statusHistory as any,
+      },
       include: {
         buyer: {
           include: {
@@ -856,6 +1120,100 @@ export class MarketplaceService {
         collectedAt: new Date().toISOString(),
       },
     });
+
+    // Notify about status change
+    await this.notificationHelperService.notifyOrderStatusChange(updatedOrder, 'COLLECTED', { id: userId });
+    await this.activityLogService.logOrderStatusChange(updatedOrder, 'READY_FOR_COLLECTION', 'COLLECTED', userId);
+
+    return updatedOrder;
+  }
+
+  async confirmDeliveryByBuyer(id: string, userId: string) {
+    const order = await this.getOrderById(id);
+
+    // Verify user has permission (only buyer can confirm delivery)
+    if (order.buyerId !== userId) {
+      throw new BadRequestException('Only the buyer can confirm delivery for this order');
+    }
+
+    // Verify order has request_transport fulfillment type
+    if (order.fulfillmentType !== 'request_transport') {
+      throw new BadRequestException(
+        `Delivery confirmation is only available for orders with request_transport fulfillment type. Order #${order.orderNumber} has fulfillment type: ${order.fulfillmentType}`
+      );
+    }
+
+    // Verify order is in DELIVERED status (driver must have confirmed delivery first)
+    if (order.status !== 'DELIVERED') {
+      throw new BadRequestException(
+        `Cannot confirm delivery. Order #${order.orderNumber} must be in DELIVERED status (driver must confirm delivery first). Current order status: ${order.status}`
+      );
+    }
+
+    // Update status history
+    const statusHistory = Array.isArray(order.statusHistory) ? order.statusHistory : [];
+    statusHistory.push({
+      status: 'COMPLETED',
+      timestamp: new Date().toISOString(),
+      changedBy: userId,
+      note: 'Buyer confirmed delivery',
+    });
+
+    // Update order status to COMPLETED
+    const updatedOrder = await this.prisma.marketplaceOrder.update({
+      where: { id },
+      data: { 
+        status: 'COMPLETED' as any,
+        completedAt: new Date(),
+        statusHistory: statusHistory as any,
+      },
+      include: {
+        buyer: {
+          include: {
+            profile: true,
+          },
+        },
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+        listing: true,
+        payment: true,
+        escrow: true,
+      },
+    });
+
+    // Create notification for farmer
+    await this.notificationHelperService.createNotification({
+      userId: order.farmerId,
+      type: 'ORDER',
+      title: 'Order Completed',
+      message: `Order #${order.orderNumber} has been completed. Buyer has confirmed delivery.`,
+      priority: 'MEDIUM',
+      entityType: 'ORDER',
+      entityId: id,
+      actionUrl: `/orders/${id}`,
+      actionLabel: 'View Order',
+      metadata: { orderNumber: order.orderNumber },
+    });
+
+    // Create activity log
+    await this.activityLogService.createActivityLog({
+      userId,
+      action: 'ORDER_DELIVERY_CONFIRMED_BY_BUYER',
+      entityType: 'ORDER',
+      entityId: id,
+      metadata: {
+        orderNumber: order.orderNumber,
+        previousStatus: 'DELIVERED',
+        newStatus: 'COMPLETED',
+      },
+    });
+
+    // Notify about status change
+    await this.notificationHelperService.notifyOrderStatusChange(updatedOrder, 'COMPLETED', { id: userId });
+    await this.activityLogService.logOrderStatusChange(updatedOrder, 'DELIVERED', 'COMPLETED', userId);
 
     return updatedOrder;
   }
@@ -1390,6 +1748,28 @@ export class MarketplaceService {
     if (rfq.quoteDeadline && new Date(rfq.quoteDeadline) < new Date()) {
       throw new BadRequestException('Quote submission deadline has passed');
     }
+
+    // Validate batchId is provided (mandatory)
+    if (!data.batchId) {
+      throw new BadRequestException('Batch selection is required. Please select a batch when submitting a quote.');
+    }
+
+    // Verify batch exists in inventory
+    const inventoryItem = await this.prisma.inventoryItem.findUnique({
+      where: { batchId: data.batchId },
+      include: {
+        center: true, // Include aggregation center for relation access via batchId
+      },
+    });
+
+    if (!inventoryItem) {
+      throw new NotFoundException(`Batch ${data.batchId} not found in inventory`);
+    }
+
+    // Verify batch belongs to the supplier
+    if (inventoryItem.farmerId !== supplierId) {
+      throw new BadRequestException('Selected batch does not belong to you');
+    }
     
     const totalAmount = rfq.quantity * data.pricePerKg;
     const submittedAt = new Date();
@@ -1406,6 +1786,7 @@ export class MarketplaceService {
           priceUnit: 'kg',
           totalAmount,
           qualityGrade: rfq.qualityGrade || 'A' as any,
+          batchId: data.batchId,
           deliveryTime: data.deliveryDate,
           deliveryLocation: rfq.deliveryLocation,
           notes: data.notes,
@@ -1733,8 +2114,26 @@ export class MarketplaceService {
       SELECT generate_order_number() as generate_order_number
     `;
 
-    // Generate batch ID and QR code
-    const { batchId, qrCode } = generateBatchTraceability();
+    // Use batchId from response (mandatory) and verify batch exists
+    if (!response.batchId) {
+      throw new BadRequestException('RFQ response must have a batchId. Batch selection is required when submitting a quote.');
+    }
+
+    // Get inventory item to verify batch exists and get aggregation center info
+    const inventoryItem = await this.prisma.inventoryItem.findUnique({
+      where: { batchId: response.batchId },
+      include: {
+        center: true, // Include aggregation center for relation access via batchId
+      },
+    });
+
+    if (!inventoryItem) {
+      throw new NotFoundException(`Batch ${response.batchId} not found in inventory`);
+    }
+
+    // Use batchId from response and QR code from response (or generate if not available)
+    const batchId = response.batchId;
+    const qrCode = response.qrCode || generateBatchTraceability().qrCode;
 
     const totalAmount = response.totalAmount;
 
@@ -2368,8 +2767,26 @@ export class MarketplaceService {
       SELECT generate_order_number() as generate_order_number
     `;
 
-    // Generate batch ID and QR code for traceability
-    const { batchId, qrCode } = generateBatchTraceability();
+    // Use batchId from offer (mandatory) and verify batch exists in inventory
+    if (!offer.batchId) {
+      throw new BadRequestException('Offer must have a batchId. Batch selection is required when submitting an offer.');
+    }
+
+    // Get inventory item to verify batch exists and get aggregation center info
+    const inventoryItem = await this.prisma.inventoryItem.findUnique({
+      where: { batchId: offer.batchId },
+      include: {
+        center: true, // Include aggregation center for relation access via batchId
+      },
+    });
+
+    if (!inventoryItem) {
+      throw new NotFoundException(`Batch ${offer.batchId} not found in inventory`);
+    }
+
+    // Use batchId from offer and QR code from offer (or generate if not available)
+    const batchId = offer.batchId;
+    const qrCode = offer.qrCode || generateBatchTraceability().qrCode;
 
     // Convert offer quantity to kg (orders store quantity in kg)
     let quantityInKg = offer.quantity;

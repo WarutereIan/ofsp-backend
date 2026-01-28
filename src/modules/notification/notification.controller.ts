@@ -1,15 +1,18 @@
 import {
   Controller,
   Get,
+  Post,
   Put,
   Delete,
   Param,
   Query,
   Body,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { NotificationService } from './notification.service';
+import { WebPushService } from './web-push.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { MarkAsReadDto } from './dto';
@@ -19,7 +22,10 @@ import { MarkAsReadDto } from './dto';
 @Controller('notifications')
 @UseGuards(JwtAuthGuard)
 export class NotificationController {
-  constructor(private readonly notificationService: NotificationService) {}
+  constructor(
+    private readonly notificationService: NotificationService,
+    private readonly webPushService: WebPushService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Get user notifications' })
@@ -77,5 +83,56 @@ export class NotificationController {
   @ApiOperation({ summary: 'Delete all read notifications' })
   async deleteAllRead(@CurrentUser() user: any) {
     return this.notificationService.deleteAllRead(user.id);
+  }
+
+  // ============ Web Push Subscription Management ============
+
+  @Get('push/public-key')
+  @ApiOperation({ summary: 'Get VAPID public key for web push subscription' })
+  async getPublicKey() {
+    const publicKey = this.webPushService.getPublicKey();
+    if (!publicKey) {
+      return { error: 'Web push is not configured' };
+    }
+    return { publicKey };
+  }
+
+  @Post('push/subscribe')
+  @ApiOperation({ summary: 'Subscribe to web push notifications' })
+  async subscribe(
+    @CurrentUser() user: any,
+    @Body() subscription: {
+      endpoint: string;
+      keys: {
+        p256dh: string;
+        auth: string;
+      };
+    },
+    @Req() req: any,
+  ) {
+    const userAgent = req.headers['user-agent'];
+    const deviceInfo = {
+      platform: req.headers['sec-ch-ua-platform'] || 'unknown',
+      userAgent,
+    };
+
+    return this.webPushService.saveSubscription(
+      user.id,
+      subscription,
+      userAgent,
+      deviceInfo,
+    );
+  }
+
+  @Post('push/unsubscribe')
+  @ApiOperation({ summary: 'Unsubscribe from web push notifications' })
+  async unsubscribe(@Body() body: { endpoint: string }) {
+    return this.webPushService.removeSubscription(body.endpoint);
+  }
+
+  @Get('push/subscriptions')
+  @ApiOperation({ summary: 'Get user push subscriptions' })
+  async getSubscriptions(@CurrentUser() user: any) {
+    return this.webPushService.getUserSubscriptions(user.id);
   }
 }
