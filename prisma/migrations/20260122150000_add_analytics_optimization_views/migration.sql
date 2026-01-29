@@ -16,8 +16,7 @@ SELECT
   COUNT(CASE WHEN "status" IN ('COMPLETED', 'DELIVERED') THEN 1 END) as "completedOrders",
   COUNT(DISTINCT "farmerId") as "activeFarmers",
   COUNT(DISTINCT "buyerId") as "activeBuyers",
-  AVG("pricePerKg") as "averagePrice",
-  SUM(CASE WHEN "status" IN ('COMPLETED', 'DELIVERED') THEN "platformFee" ELSE 0 END) as "platformFee"
+  AVG("pricePerKg") as "averagePrice"
 FROM "marketplace_orders"
 GROUP BY DATE("createdAt");
 
@@ -139,7 +138,7 @@ FROM (
     sr."quantity" as quantity_needed,
     'SOURCING_REQUEST' as source_type
   FROM "sourcing_requests" sr
-  WHERE sr."status" IN ('OPEN', 'URGENT', 'PARTIALLY_FULFILLED')
+  WHERE sr."status" IN ('OPEN', 'URGENT')
     AND sr."variety" IS NOT NULL
 ) combined
 GROUP BY 

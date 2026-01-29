@@ -38,6 +38,7 @@ model User {
   email    String     @unique
   phone    String     @unique
   password String // Hashed with bcrypt
+  ussdPinHash String? // Hashed 4-digit USSD PIN for USSD login
   role     UserRole
   status   UserStatus @default(PENDING_VERIFICATION)
 
@@ -150,12 +151,27 @@ model Profile {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Group Assignment (for farmers)
+  farmerGroupId String?
+  farmerGroup   FarmerGroup? @relation(fields: [farmerGroupId], references: [id])
+
+  // Aggregation Center Assignment (for aggregation managers - mandatory)
+  aggregationCenterId String?
+  aggregationCenter   AggregationCenter? @relation("ProfileAggregationCenter", fields: [aggregationCenterId], references: [id])
+
+  // County Staff Assignment (for county officers/staff)
+  assignedCounty    String?
+  assignedSubCounty String?
+  hasAllAccess      Boolean @default(false) // All access to all counties/subcounties
+
   @@index([userId])
   @@index([county])
   @@index([ward])
   // Analytics indexes - for filtering and growth calculations
   @@index([subCounty])
   @@index([createdAt])
+  @@index([farmerGroupId])
+  @@index([aggregationCenterId])
   @@map("profiles")
 }
 
@@ -1243,11 +1259,45 @@ model AggregationCenter {
   pickupReceipts    PickupReceipt[]
   wastageEntries    WastageEntry[]
   satelliteCenters  AggregationCenter[]  @relation("MainSatellite")
+  assignedProfiles  Profile[]            @relation("ProfileAggregationCenter")
 
   @@index([code])
   @@index([status])
   @@index([county])
   @@map("aggregation_centers")
+}
+
+// ============================================
+// FARMER GROUPS
+// ============================================
+
+model FarmerGroup {
+  id        String @id @default(uuid())
+  name      String
+  code      String @unique // e.g., "FG-KANGUNDO-001"
+  description String?
+
+  // Location Assignment
+  county    String
+  subCounty String
+  ward      String?
+
+  // Group Info
+  memberCount Int @default(0)
+  isActive    Boolean @default(true)
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  members Profile[]
+
+  @@index([code])
+  @@index([county])
+  @@index([subCounty])
+  @@index([ward])
+  @@map("farmer_groups")
 }
 
 model StockTransaction {
@@ -1527,6 +1577,7 @@ model Payment {
   updatedAt DateTime @updatedAt
 
   @@index([status])
+  @@index([initiatedAt])
   @@index([referenceNumber])
   @@index([payerId])
   @@index([payeeId])
@@ -1807,6 +1858,25 @@ model BadgeProgress {
 }
 
 // ============================================
+// SAVED / GENERATED REPORTS (analytics)
+// ============================================
+
+model SavedReport {
+  id           String   @id @default(uuid())
+  templateId   String
+  templateName String
+  parameters   Json     // e.g. { timeRange, format, county, subcounty }
+  payload      Json     // full report result (summary, trends, financial, etc.)
+  generatedBy  String?   // userId who generated
+  createdAt    DateTime @default(now())
+
+  @@index([templateId])
+  @@index([createdAt])
+  @@index([generatedBy])
+  @@map("saved_reports")
+}
+
+// ============================================
 // ANALYTICS MATERIALIZED VIEWS
 // ============================================
 
@@ -1898,7 +1968,6 @@ view PlatformMetricsSummary {
   activeFarmers   Int
   activeBuyers    Int
   averagePrice    Float?
-  platformFee     Float?
 
   @@map("platform_metrics_summary")
 }

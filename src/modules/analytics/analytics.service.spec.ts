@@ -568,7 +568,6 @@ describe('AnalyticsService', () => {
 
       const result = await service.getStaffAnalytics(mockFilters, staffUser);
 
-      expect(result).toHaveProperty('platformFee');
       expect(result).toHaveProperty('qualityGradeAPercentage');
       expect(result).toHaveProperty('totalVolume');
       expect(result).toHaveProperty('geographicAnalytics');

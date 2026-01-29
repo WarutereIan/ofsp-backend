@@ -66,4 +66,14 @@ export class AnalyticsFiltersDto {
   @IsOptional()
   @IsEnum(EntityType)
   entityType?: EntityType;
+
+  @ApiPropertyOptional({ description: 'Filter by county (e.g. for staff scoping)' })
+  @IsOptional()
+  @IsString()
+  county?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by subcounty (e.g. for staff scoping)' })
+  @IsOptional()
+  @IsString()
+  subcounty?: string;
 }

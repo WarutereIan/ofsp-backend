@@ -1386,25 +1386,18 @@ describe('AnalyticsController (e2e)', () => {
         .expect(200);
 
       expect(response.body.success).toBe(true);
-      expect(response.body.data).toHaveProperty('platformFee');
       expect(response.body.data).toHaveProperty('qualityGradeAPercentage');
       expect(response.body.data).toHaveProperty('totalVolume');
       expect(response.body.data).toHaveProperty('geographicAnalytics');
       expect(response.body.data).toHaveProperty('period');
       
       // Validate data types and value ranges
-      expect(typeof response.body.data.platformFee).toBe('number');
       expect(typeof response.body.data.qualityGradeAPercentage).toBe('number');
       expect(typeof response.body.data.totalVolume).toBe('number');
       
-      expect(response.body.data.platformFee).toBeGreaterThanOrEqual(0);
       expect(response.body.data.qualityGradeAPercentage).toBeGreaterThanOrEqual(0);
       expect(response.body.data.qualityGradeAPercentage).toBeLessThanOrEqual(100);
       expect(response.body.data.totalVolume).toBeGreaterThanOrEqual(0);
-      
-      // Platform fee should be 2% of total revenue
-      // With test data: revenue = 38500, platformFee = 38500 * 0.02 = 770
-      // Note: Actual value depends on date range, but should be >= 0
     });
 
     it('should return program indicators', async () => {
@@ -1415,8 +1408,6 @@ describe('AnalyticsController (e2e)', () => {
 
       expect(response.body.success).toBe(true);
       expect(response.body.data).toBeDefined();
-      // Platform fee should be calculated
-      expect(typeof response.body.data.platformFee).toBe('number');
     });
 
     it('should return geographic analytics', async () => {

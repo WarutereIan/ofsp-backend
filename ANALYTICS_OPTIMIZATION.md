@@ -44,7 +44,7 @@ SELECT
   COUNT(DISTINCT "farmerId") as "activeFarmers",
   COUNT(DISTINCT "buyerId") as "activeBuyers",
   AVG("pricePerKg") as "averagePrice",
-  SUM(CASE WHEN "status" IN ('COMPLETED', 'DELIVERED') THEN "platformFee" ELSE 0 END) as "platformFee"
+  -- platform fee removed from view
 FROM "marketplace_orders"
 GROUP BY DATE("createdAt");
 

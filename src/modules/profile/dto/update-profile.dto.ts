@@ -56,4 +56,40 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   profilePicture?: string;
+
+  // Assignment fields (for farmers, aggregation managers, and county staff)
+  @ApiPropertyOptional({
+    description: 'Farmer group ID (for farmers)',
+  })
+  @IsOptional()
+  @IsString()
+  farmerGroupId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Aggregation center ID (for aggregation managers)',
+  })
+  @IsOptional()
+  @IsString()
+  aggregationCenterId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Assigned county (for county staff)',
+  })
+  @IsOptional()
+  @IsString()
+  assignedCounty?: string;
+
+  @ApiPropertyOptional({
+    description: 'Assigned subcounty (for county staff)',
+  })
+  @IsOptional()
+  @IsString()
+  assignedSubCounty?: string;
+
+  @ApiPropertyOptional({
+    description: 'All access permission for all counties/subcounties (for county staff)',
+  })
+  @IsOptional()
+  @IsBoolean()
+  hasAllAccess?: boolean;
 }

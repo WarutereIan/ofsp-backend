@@ -148,7 +148,7 @@ Comprehensive end-to-end tests for the Analytics module covering all endpoints, 
 - ✅ Accessible to admin users
 
 **Fields Validated:**
-- `platformFee`, `qualityGradeAPercentage`, `totalVolume`
+- `qualityGradeAPercentage`, `totalVolume`
 - `geographicAnalytics`, `period`
 
 #### 6.4 County Officer Analytics (`GET /analytics/county-officer`)

@@ -1,6 +1,8 @@
 import {
   Controller,
   Get,
+  Post,
+  Body,
   Query,
   Param,
   UseGuards,
@@ -8,8 +10,11 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { AnalyticsService } from './analytics.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { AnalyticsFiltersDto, LeaderboardFiltersDto, TimeRange, TimePeriod, EntityType } from './dto';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
+import { AnalyticsFiltersDto, LeaderboardFiltersDto, TimeRange, TimePeriod, EntityType, GenerateReportDto } from './dto';
 import { LeaderboardMetric, LeaderboardPeriod } from './dto/leaderboard-filters.dto';
 
 @ApiTags('Analytics')
@@ -203,5 +208,50 @@ export class AnalyticsController {
       throw new Error('Unauthorized: Only admin and staff can refresh views');
     }
     return this.analyticsService.refreshAnalyticsViews();
+  }
+
+  // ============ Reports (staff/admin only) ============
+
+  @Get('reports')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.STAFF)
+  @ApiOperation({ summary: 'List saved/generated reports (staff/admin only)' })
+  @ApiQuery({ name: 'limit', type: Number, required: false })
+  @ApiQuery({ name: 'templateId', type: String, required: false })
+  async listReports(
+    @Query('limit') limit?: string,
+    @Query('templateId') templateId?: string,
+  ) {
+    const opts: { limit?: number; templateId?: string } = {};
+    if (limit != null) opts.limit = parseInt(limit, 10);
+    if (templateId) opts.templateId = templateId;
+    return this.analyticsService.listSavedReports(opts);
+  }
+
+  @Get('reports/:id')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.STAFF)
+  @ApiOperation({ summary: 'Get saved report by id (full payload) (staff/admin only)' })
+  async getReportById(@Param('id') id: string) {
+    return this.analyticsService.getSavedReportById(id);
+  }
+
+  @Get('report-templates')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.STAFF)
+  @ApiOperation({ summary: 'Get available report templates (staff/admin only)' })
+  getReportTemplates() {
+    return this.analyticsService.getReportTemplates();
+  }
+
+  @Post('reports/generate')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.STAFF)
+  @ApiOperation({ summary: 'Generate report from template (staff/admin only)' })
+  async generateReport(
+    @Body() dto: GenerateReportDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.analyticsService.generateReport(dto.templateId, dto.parameters || {}, user);
   }
 }

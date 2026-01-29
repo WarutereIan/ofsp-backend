@@ -265,9 +265,49 @@ export class TransportService {
           console.log(`[TRANSPORT_SERVICE] Notification sent successfully to buyer`);
 
           // Notify all transport providers about new ORDER_DELIVERY request
-          // Note: In a real implementation, you might want to fetch active providers
-          // For now, providers will see it in their pending requests list
-          console.log(`[TRANSPORT_SERVICE] Transport providers will see request in pending requests list`);
+          try {
+            // request.order is guaranteed by the enclosing if (data.type === 'ORDER_DELIVERY' && request.order)
+            const linkedOrder = request.order!;
+
+            const providers = await this.prisma.user.findMany({
+              where: { role: 'TRANSPORT_PROVIDER' },
+              select: { id: true },
+            });
+
+            if (providers.length > 0) {
+              await this.notificationHelperService.createNotifications(
+                providers.map((provider) => ({
+                  userId: provider.id,
+                  type: 'TRANSPORT',
+                  title: 'New Delivery Request Available',
+                  message: `New delivery request #${request.requestNumber} for order #${linkedOrder.orderNumber} is available to accept.`,
+                  priority: 'MEDIUM',
+                  entityType: 'TRANSPORT',
+                  entityId: request.id,
+                  actionUrl: `/transport/${request.id}`,
+                  actionLabel: 'View Request',
+                  metadata: {
+                    requestNumber: request.requestNumber,
+                    orderNumber: linkedOrder.orderNumber,
+                    orderId: linkedOrder.id,
+                    type: 'ORDER_DELIVERY',
+                  },
+                })),
+              );
+              console.log(
+                `[TRANSPORT_SERVICE] Broadcast delivery request notification to ${providers.length} transport providers`,
+              );
+            } else {
+              console.log(
+                `[TRANSPORT_SERVICE] No transport providers found to notify for ORDER_DELIVERY request ${request.requestNumber}`,
+              );
+            }
+          } catch (providerNotifyError) {
+            this.logger.warn(
+              `[TRANSPORT_SERVICE] Failed to notify transport providers for ORDER_DELIVERY request ${request.requestNumber}:`,
+              providerNotifyError,
+            );
+          }
         } else {
           // For other transport types, notify requester
           console.log(`[TRANSPORT_SERVICE] Sending notification for ${data.type} transport request...`);
@@ -1240,7 +1280,7 @@ export class TransportService {
       throw error;
     }
 
-    return this.prisma.pickupSlotBooking.findUnique({
+    const fullBooking = await this.prisma.pickupSlotBooking.findUnique({
       where: { id: booking.id },
       include: {
         slot: {
@@ -1248,12 +1288,64 @@ export class TransportService {
             schedule: {
               include: {
                 aggregationCenter: true,
+                provider: {
+                  include: {
+                    profile: true,
+                  },
+                },
               },
             },
           },
         },
       },
     });
+
+    if (fullBooking) {
+      // Create notifications (per lifecycle: farmer + provider)
+      try {
+        await this.notificationHelperService.createNotifications([
+          {
+            userId: farmerId,
+            type: 'PICKUP_BOOKING',
+            title: 'Pickup Slot Booked',
+            message: `Your pickup slot has been booked on schedule #${fullBooking.slot.schedule.scheduleNumber} at ${fullBooking.slot.schedule.aggregationCenter.name}.`,
+            priority: 'MEDIUM',
+            entityType: 'PICKUP_BOOKING',
+            entityId: fullBooking.id,
+            actionUrl: `/pickup-bookings/${fullBooking.id}`,
+            actionLabel: 'View Booking',
+            metadata: {
+              scheduleId: fullBooking.scheduleId,
+              scheduleNumber: fullBooking.slot.schedule.scheduleNumber,
+              centerId: fullBooking.slot.schedule.aggregationCenterId,
+            },
+          },
+          {
+            userId: fullBooking.slot.schedule.providerId,
+            type: 'PICKUP_BOOKING',
+            title: 'New Pickup Booking',
+            message: `New pickup booking on schedule #${fullBooking.slot.schedule.scheduleNumber} for ${fullBooking.quantity}kg.`,
+            priority: 'MEDIUM',
+            entityType: 'PICKUP_BOOKING',
+            entityId: fullBooking.id,
+            actionUrl: `/pickup-schedules/${fullBooking.scheduleId}`,
+            actionLabel: 'View Schedule',
+            metadata: {
+              scheduleId: fullBooking.scheduleId,
+              scheduleNumber: fullBooking.slot.schedule.scheduleNumber,
+              quantity: fullBooking.quantity,
+            },
+          },
+        ]);
+      } catch (error) {
+        this.logger.error(
+          `Failed to create notifications for pickup slot booking (bookingId=${fullBooking.id})`,
+          (error as Error)?.stack ?? String(error),
+        );
+      }
+    }
+
+    return fullBooking;
   }
 
   async cancelPickupSlotBooking(bookingId: string, farmerId: string) {

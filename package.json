@@ -45,6 +45,7 @@
     "passport-local": "^1.0.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "ussd-builder": "^1.3.2",
     "web-push": "^3.6.6"
   },
   "devDependencies": {

@@ -78,8 +78,9 @@ export class ProfileController {
     @Body() updateProfileDto: UpdateProfileDto,
     @CurrentUser() user: any,
   ) {
-    // Only allow users to update their own profile unless admin
-    if (user.role !== 'ADMIN' && user.id !== id) {
+    // Allow admin/staff to update any profile; others may only update their own
+    const canUpdateOthers = user.role === 'ADMIN' || user.role === 'STAFF';
+    if (!canUpdateOthers && user.id !== id) {
       throw new Error('Unauthorized to update this profile');
     }
     return this.profileService.update(id, updateProfileDto);

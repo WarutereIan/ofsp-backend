@@ -168,6 +168,14 @@ export class NotificationHelperService {
         title: 'Order Accepted',
         message: `Order #${order.orderNumber} has been accepted`,
       },
+      ORDER_ACCEPTED_BUYER: {
+        title: 'Order Accepted - Proceed with Payment',
+        message: `Order #${order.orderNumber} has been accepted. Please proceed with payment`,
+      },
+      ORDER_ACCEPTED_FARMER: {
+        title: 'Order Accepted',
+        message: `Order #${order.orderNumber} accepted. Waiting for buyer payment confirmation`,
+      },
       ORDER_REJECTED: {
         title: 'Order Rejected',
         message: `Order #${order.orderNumber} has been rejected`,
@@ -175,6 +183,14 @@ export class NotificationHelperService {
       PAYMENT_SECURED: {
         title: 'Payment Secured',
         message: `Payment secured for order #${order.orderNumber}. Proceed with fulfillment`,
+      },
+      PAYMENT_SECURED_FARMER: {
+        title: 'Order Marked as Paid - Confirm Payment',
+        message: `Order #${order.orderNumber} has been marked as paid. Please confirm the payment`,
+      },
+      PAYMENT_SECURED_BUYER: {
+        title: 'Payment Confirmation Recorded',
+        message: `Payment confirmation recorded for order #${order.orderNumber}. Waiting for farmer confirmation`,
       },
       IN_TRANSIT: {
         title: 'Order In Transit',
@@ -208,6 +224,26 @@ export class NotificationHelperService {
         title: 'Order Completed',
         message: `Order #${order.orderNumber} completed. Rate your experience`,
       },
+      READY_TO_PROCESS: {
+        title: 'Order Ready for Processing',
+        message: `Order #${order.orderNumber} is ready for processing at the aggregation center`,
+      },
+      PROCESSING: {
+        title: 'Order Processing Started',
+        message: `Order #${order.orderNumber} processing has started at the aggregation center`,
+      },
+      READY_FOR_COLLECTION: {
+        title: 'Order Ready for Collection',
+        message: `Order #${order.orderNumber} is ready for collection at the aggregation center`,
+      },
+      COLLECTED: {
+        title: 'Order Collected',
+        message: `Order #${order.orderNumber} has been collected by the buyer`,
+      },
+      CANCELLED: {
+        title: 'Order Cancelled',
+        message: `Order #${order.orderNumber} has been cancelled`,
+      },
     };
 
     const statusInfo = statusMessages[newStatus] || {
@@ -219,12 +255,26 @@ export class NotificationHelperService {
 
     // Notify buyer
     if (order.buyerId) {
+      // Special handling for ORDER_ACCEPTED: buyer should be prompted to proceed with payment
+      let buyerTitle = statusInfo.title;
+      let buyerMessage = statusInfo.message;
+      
+      if (newStatus === 'ORDER_ACCEPTED') {
+        const buyerStatusInfo = statusMessages['ORDER_ACCEPTED_BUYER'] || statusInfo;
+        buyerTitle = buyerStatusInfo.title;
+        buyerMessage = buyerStatusInfo.message;
+      } else if (newStatus === 'PAYMENT_SECURED') {
+        const buyerStatusInfo = statusMessages['PAYMENT_SECURED_BUYER'] || statusInfo;
+        buyerTitle = buyerStatusInfo.title;
+        buyerMessage = buyerStatusInfo.message;
+      }
+      
       notifications.push({
         userId: order.buyerId,
         type: 'ORDER',
-        title: statusInfo.title,
-        message: statusInfo.message,
-        priority: ['ORDER_REJECTED', 'QUALITY_REJECTED', 'DELIVERED', 'COMPLETED'].includes(newStatus) ? 'HIGH' : 'MEDIUM',
+        title: buyerTitle,
+        message: buyerMessage,
+        priority: ['ORDER_ACCEPTED', 'ORDER_REJECTED', 'QUALITY_REJECTED', 'DELIVERED', 'COMPLETED'].includes(newStatus) ? 'HIGH' : 'MEDIUM',
         entityType: 'ORDER',
         entityId: order.id,
         actionUrl: `/orders/${order.id}`,
@@ -235,11 +285,25 @@ export class NotificationHelperService {
 
     // Notify farmer
     if (order.farmerId) {
+      // Special handling for ORDER_ACCEPTED: farmer should know order is accepted and waiting for payment
+      let farmerTitle = statusInfo.title;
+      let farmerMessage = statusInfo.message;
+      
+      if (newStatus === 'ORDER_ACCEPTED') {
+        const farmerStatusInfo = statusMessages['ORDER_ACCEPTED_FARMER'] || statusInfo;
+        farmerTitle = farmerStatusInfo.title;
+        farmerMessage = farmerStatusInfo.message;
+      } else if (newStatus === 'PAYMENT_SECURED') {
+        const farmerStatusInfo = statusMessages['PAYMENT_SECURED_FARMER'] || statusInfo;
+        farmerTitle = farmerStatusInfo.title;
+        farmerMessage = farmerStatusInfo.message;
+      }
+      
       notifications.push({
         userId: order.farmerId,
         type: 'ORDER',
-        title: statusInfo.title,
-        message: statusInfo.message,
+        title: farmerTitle,
+        message: farmerMessage,
         priority: ['ORDER_ACCEPTED', 'PAYMENT_SECURED', 'DELIVERED', 'COMPLETED'].includes(newStatus) ? 'HIGH' : 'MEDIUM',
         entityType: 'ORDER',
         entityId: order.id,

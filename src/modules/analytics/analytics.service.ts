@@ -1088,12 +1088,14 @@ export class AnalyticsService {
         deadline: { gte: now },
       },
       select: {
+        id: true,
         variety: true,
         qualityGrade: true,
         quantity: true,
         deliveryLocation: true,
         buyer: {
           select: {
+            id: true,
             profile: {
               select: {
                 subCounty: true,
@@ -1111,12 +1113,14 @@ export class AnalyticsService {
         deadline: { gte: now },
       },
       select: {
+        id: true,
         variety: true,
         qualityGrade: true,
         quantity: true,
         deliveryRegion: true,
         buyer: {
           select: {
+            id: true,
             profile: {
               select: {
                 subCounty: true,
@@ -1133,88 +1137,88 @@ export class AnalyticsService {
         status: { in: ['ORDER_PLACED', 'ORDER_ACCEPTED'] },
       },
       select: {
+        id: true,
         variety: true,
         quantity: true,
         deliveryCounty: true,
+        buyerId: true,
       },
     });
 
-    // Aggregate buyer demand
+    // Aggregate buyer demand by variety and grade only (not by location)
     const demandMap = new Map<string, {
       variety: string;
       grade: string;
-      location: string;
-      buyerCount: number;
+      buyerIds: Set<string>; // Track unique buyers across all locations
       totalQuantityNeeded: number;
     }>();
 
     // Process RFQs
     rfqs.forEach(rfq => {
       if (!rfq.variety || !rfq.qualityGrade) return;
-      const location = rfq.buyer?.profile?.subCounty || rfq.buyer?.profile?.county || rfq.deliveryLocation || 'Unknown';
-      const key = `${rfq.variety}-${rfq.qualityGrade}-${location}`;
+      const key = `${rfq.variety}-${rfq.qualityGrade}`;
+      const buyerId = rfq.buyer?.id || `rfq-${rfq.id}` || 'unknown';
       
       if (!demandMap.has(key)) {
         demandMap.set(key, {
           variety: rfq.variety,
           grade: rfq.qualityGrade,
-          location,
-          buyerCount: 0,
+          buyerIds: new Set<string>(),
           totalQuantityNeeded: 0,
         });
       }
       const entry = demandMap.get(key)!;
-      entry.buyerCount += 1;
+      entry.buyerIds.add(buyerId);
       entry.totalQuantityNeeded += rfq.quantity || 0;
     });
 
     // Process Sourcing Requests
     sourcingRequests.forEach(sr => {
       if (!sr.variety || !sr.qualityGrade) return;
-      const location = sr.buyer?.profile?.subCounty || sr.buyer?.profile?.county || sr.deliveryRegion || 'Unknown';
-      const key = `${sr.variety}-${sr.qualityGrade}-${location}`;
+      const key = `${sr.variety}-${sr.qualityGrade}`;
+      const buyerId = sr.buyer?.id || `sr-${sr.id}` || 'unknown';
       
       if (!demandMap.has(key)) {
         demandMap.set(key, {
           variety: sr.variety,
           grade: sr.qualityGrade,
-          location,
-          buyerCount: 0,
+          buyerIds: new Set<string>(),
           totalQuantityNeeded: 0,
         });
       }
       const entry = demandMap.get(key)!;
-      entry.buyerCount += 1;
+      entry.buyerIds.add(buyerId);
       entry.totalQuantityNeeded += sr.quantity || 0;
     });
 
     // Process Pending Orders
     pendingOrders.forEach(order => {
-      // Skip orders without delivery county (e.g., self-pickup orders)
-      if (!order.deliveryCounty) return;
+      if (!order.variety) return;
+      const key = `${order.variety}-A`; // Assume Grade A for pending orders
+      const buyerId = order.buyerId || `order-${order.id}` || 'unknown';
       
-      const key = `${order.variety}-A-${order.deliveryCounty}`; // Assume Grade A for pending orders
       if (!demandMap.has(key)) {
         demandMap.set(key, {
           variety: order.variety,
           grade: 'A',
-          location: order.deliveryCounty,
-          buyerCount: 0,
+          buyerIds: new Set<string>(),
           totalQuantityNeeded: 0,
         });
       }
       const entry = demandMap.get(key)!;
-      entry.buyerCount += 1;
+      entry.buyerIds.add(buyerId);
       entry.totalQuantityNeeded += order.quantity || 0;
     });
 
     // Convert to array and calculate demand levels
     const buyerDemand = Array.from(demandMap.values()).map(entry => {
+      const buyerCount = entry.buyerIds.size;
+      
       // Determine demand level based on quantity and buyer count
       let demandLevel: 'high' | 'medium' | 'low' = 'low';
-      if (entry.totalQuantityNeeded > 2000 || entry.buyerCount > 10) {
+      if (entry.totalQuantityNeeded > 2000 || buyerCount > 10) {
         demandLevel = 'high';
-      } else if (entry.totalQuantityNeeded > 1000 || entry.buyerCount > 5) {
+      } else if (entry.totalQuantityNeeded > 1000 || buyerCount > 5) {
         demandLevel = 'medium';
       }
 
@@ -1225,7 +1229,10 @@ export class AnalyticsService {
       };
 
       return {
-        ...entry,
+        variety: entry.variety,
+        grade: entry.grade,
+        buyerCount,
+        totalQuantityNeeded: entry.totalQuantityNeeded,
         demandLevel,
         color: colors[demandLevel],
       };
@@ -1793,8 +1800,6 @@ export class AnalyticsService {
       _sum: { totalAmount: true },
     });
 
-    const platformFee = (totalRevenue._sum.totalAmount || 0) * 0.02;
-
     // Quality trends (Grade A percentage)
     const qualityChecks = await this.prisma.qualityCheck.findMany({
       where: {
@@ -1849,7 +1854,6 @@ export class AnalyticsService {
     const totalVolume = volumeOrders.reduce((sum, o) => sum + (o.quantity || 0), 0);
 
     return {
-      platformFee: Math.round(platformFee * 100) / 100,
       qualityGradeAPercentage: Math.round(qualityGradeAPercentage * 100) / 100,
       totalVolume: Math.round(totalVolume * 100) / 100,
       geographicAnalytics: {
@@ -1900,10 +1904,13 @@ export class AnalyticsService {
       },
     });
 
-    // Active farmers (have orders in period)
-    const activeFarmerIds = await this.prisma.marketplaceOrder.findMany({
+    // Active farmers (have stock_in transactions in period - tracks actual farmer activity)
+    const activeFarmerIds = await this.prisma.stockTransaction.findMany({
       where: {
+        type: 'STOCK_IN',
+        status: 'CONFIRMED', // Only count confirmed transactions
         createdAt: { gte: start, lte: end },
+        farmerId: { not: null },
         farmer: {
           profile: jurisdictionWhere,
         },
@@ -1935,7 +1942,20 @@ export class AnalyticsService {
       },
     });
 
-    // Quality score (% Grade A)
+    // Quality score (% Grade A) - from stock transactions with quality grades
+    // Use stock transactions as they represent actual deliveries with grades
+    // Note: qualityGrade is required (not nullable) in StockTransaction, so no need to filter for null
+    const stockTransactionsWithGrades = await this.prisma.stockTransaction.findMany({
+      where: {
+        type: 'STOCK_IN',
+        status: 'CONFIRMED',
+        createdAt: { gte: start, lte: end },
+        center: jurisdictionWhere,
+      },
+      select: { qualityGrade: true },
+    });
+
+    // Also get quality checks from centers in jurisdiction
     const qualityChecks = await this.prisma.qualityCheck.findMany({
       where: {
         checkedAt: { gte: start, lte: end },
@@ -1944,15 +1964,34 @@ export class AnalyticsService {
       select: { qualityGrade: true },
     });
 
-    const gradeAChecks = qualityChecks.filter(qc => qc.qualityGrade === 'A').length;
-    const qualityScore = qualityChecks.length > 0
-      ? (gradeAChecks / qualityChecks.length) * 100
+    // Combine both sources for quality score calculation
+    const allQualityGrades = [
+      ...stockTransactionsWithGrades.map(st => st.qualityGrade),
+      ...qualityChecks.map(qc => qc.qualityGrade),
+    ];
+
+    const gradeACount = allQualityGrades.filter(grade => grade === 'A').length;
+    const qualityScore = allQualityGrades.length > 0
+      ? (gradeACount / allQualityGrades.length) * 100
       : 0;
 
-    // Total value (KES)
-    const totalValue = await this.prisma.marketplaceOrder.aggregate({
+    // Total value (KES) - from stock transactions (STOCK_OUT) and orders
+    // Stock transactions represent actual sales/deliveries from centers
+    const stockOutValue = await this.prisma.stockTransaction.aggregate({
       where: {
-        status: { in: ['COMPLETED', 'DELIVERED'] },
+        type: 'STOCK_OUT',
+        createdAt: { gte: start, lte: end },
+        center: jurisdictionWhere,
+        totalAmount: { not: null },
+      },
+      _sum: { totalAmount: true },
+    });
+
+    // Include all orders that aren't canceled (regardless of payment status)
+    // This captures all order values as requested: "orders that have payments confirmed or aren't canceled"
+    const allOrdersValue = await this.prisma.marketplaceOrder.aggregate({
+      where: {
+        status: { not: 'CANCELLED' },
         createdAt: { gte: start, lte: end },
         farmer: {
           profile: jurisdictionWhere,
@@ -1961,11 +2000,21 @@ export class AnalyticsService {
       _sum: { totalAmount: true },
     });
 
+    // Sum both sources (stock transactions and orders)
+    // Note: Some orders might be represented in both, but stock transactions are more accurate for center-based sales
+    const totalValue = {
+      _sum: {
+        totalAmount: (stockOutValue._sum.totalAmount || 0) + (allOrdersValue._sum.totalAmount || 0),
+      },
+    };
+
     // Pending advisories count
     const pendingAdvisories = await this.prisma.advisory.count({
       where: {
         status: 'PENDING',
-        ...(jurisdictionWhere.county ? { targetCounty: jurisdictionWhere.county } : {}),
+        ...(jurisdictionWhere.county ? { 
+          targetValue: { contains: jurisdictionWhere.county },
+        } : {}),
       },
     });
 
@@ -2172,7 +2221,63 @@ export class AnalyticsService {
       },
     });
 
+    // Recent stock transactions (STOCK_IN) - tracks actual farmer activity
+    const recentTransactions = await this.prisma.stockTransaction.findMany({
+      where: {
+        type: 'STOCK_IN',
+        status: 'CONFIRMED',
+        createdAt: { gte: activityStart, lte: end },
+        farmerId: { not: null },
+        farmer: {
+          profile: jurisdictionWhere,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20, // Last 20 transactions
+      select: {
+        id: true,
+        transactionNumber: true,
+        quantity: true,
+        variety: true,
+        qualityGrade: true,
+        totalAmount: true,
+        createdAt: true,
+        farmer: {
+          select: {
+            id: true,
+            profile: {
+              select: {
+                firstName: true,
+                lastName: true,
+                subCounty: true,
+              },
+            },
+          },
+        },
+        center: {
+          select: {
+            name: true,
+          },
+        },
+      },
+    });
+
     const farmerActivity = [
+      ...recentTransactions
+        .filter(transaction => transaction.farmer !== null)
+        .map(transaction => ({
+          type: 'transaction' as const,
+          id: transaction.id,
+          farmerId: transaction.farmer!.id,
+          farmerName: transaction.farmer!.profile
+            ? `${transaction.farmer!.profile.firstName} ${transaction.farmer!.profile.lastName}`
+            : 'Unknown',
+          subCounty: transaction.farmer!.profile?.subCounty || 'Unknown',
+          activity: `Stock In - ${transaction.variety} (${transaction.quantity}kg, Grade ${transaction.qualityGrade}) at ${transaction.center.name}`,
+          value: transaction.totalAmount || 0,
+          quantity: transaction.quantity || 0,
+          date: transaction.createdAt,
+        })),
       ...recentOrders.map(order => ({
         type: 'order' as const,
         id: order.id,
@@ -2180,6 +2285,7 @@ export class AnalyticsService {
         farmerName: order.farmer.profile
           ? `${order.farmer.profile.firstName} ${order.farmer.profile.lastName}`
           : 'Unknown',
+        subCounty: order.farmer.profile?.subCounty || 'Unknown',
         activity: `Order ${order.orderNumber} - ${order.status}`,
         value: order.totalAmount || 0,
         quantity: order.quantity || 0,
@@ -2192,6 +2298,7 @@ export class AnalyticsService {
         farmerName: listing.farmer.profile
           ? `${listing.farmer.profile.firstName} ${listing.farmer.profile.lastName}`
           : 'Unknown',
+        subCounty: listing.farmer.profile?.subCounty || 'Unknown',
         activity: `New listing - ${listing.variety} (${listing.quantity}kg)`,
         value: (listing.pricePerKg || 0) * (listing.quantity || 0),
         quantity: listing.quantity || 0,
@@ -3144,8 +3251,6 @@ export class AnalyticsService {
       dailyStats.reduce((max, d) => Math.max(max, d.activeFarmers), 0);
     const activeBuyers = new Set(dailyStats.flatMap(d => d.activeBuyers)).size ||
       dailyStats.reduce((max, d) => Math.max(max, d.activeBuyers), 0);
-    const totalPlatformFee = dailyStats.reduce((sum, d) => sum + (d.platformFee || 0), 0);
-    
     // Calculate averages
     const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
     const avgPrice = dailyStats.length > 0
@@ -3160,12 +3265,445 @@ export class AnalyticsService {
       activeBuyers,
       averageOrderValue: Math.round(avgOrderValue * 100) / 100,
       averagePrice: Math.round(avgPrice * 100) / 100,
-      totalPlatformFee: Math.round(totalPlatformFee * 100) / 100,
       dateRange: {
         start: startDate.toISOString(),
         end: endDate.toISOString(),
       },
       dataPoints: dailyStats.length,
     };
+  }
+
+  // ============ Report Parameters (REPORTING_FRAMEWORK.md) ============
+
+  /** F1–F7, V4, V5 + order/payment distributions for charts */
+  async getReportParametersFinancial(filters: AnalyticsFiltersDto, user: any) {
+    const { start, end } = this.getDateRange(filters.timeRange, filters.dateRange);
+    const orderWhere = this.buildEntityWhere(filters, user);
+    const periodWhere = { createdAt: { gte: start, lte: end } };
+    const completedWhere = { ...orderWhere, status: { in: ['COMPLETED', 'DELIVERED'] as any }, ...periodWhere };
+    const [revenue, orderCount, volume, paymentsSecured, paymentsPending, paymentsFailed, ordersByStatus, revenueByCounty] = await Promise.all([
+      this.prisma.marketplaceOrder.aggregate({ where: completedWhere, _sum: { totalAmount: true } }),
+      this.prisma.marketplaceOrder.count({ where: completedWhere }),
+      this.prisma.marketplaceOrder.aggregate({ where: completedWhere, _sum: { quantity: true } }),
+      this.prisma.payment.count({ where: { status: { in: ['SECURED', 'RELEASED'] }, ...periodWhere } }),
+      this.prisma.payment.count({ where: { status: 'PENDING', ...periodWhere } }),
+      this.prisma.payment.count({ where: { status: { in: ['FAILED', 'DISPUTED'] }, ...periodWhere } }),
+      this.prisma.marketplaceOrder.groupBy({ by: ['status'], where: periodWhere, _count: { id: true } }),
+      this.prisma.marketplaceOrder.groupBy({
+        by: ['deliveryCounty'],
+        where: completedWhere,
+        _sum: { totalAmount: true },
+        _count: { id: true },
+      }),
+    ]);
+    const totalRevenue = revenue._sum.totalAmount || 0;
+    const totalVolume = volume._sum.quantity || 0;
+    return {
+      total_revenue: totalRevenue,
+      average_order_value: orderCount > 0 ? Math.round((totalRevenue / orderCount) * 100) / 100 : 0,
+      payments_secured_count: paymentsSecured,
+      payments_pending_count: paymentsPending,
+      payments_failed_count: paymentsFailed,
+      total_volume_kg: totalVolume,
+      average_price_per_kg: totalVolume > 0 ? Math.round((totalRevenue / totalVolume) * 100) / 100 : 0,
+      // Payment status distribution for pie chart
+      payment_status_distribution: [
+        { status: 'Secured/Released', count: paymentsSecured },
+        { status: 'Pending', count: paymentsPending },
+        { status: 'Failed/Disputed', count: paymentsFailed },
+      ].filter((p) => p.count > 0),
+      // Order status distribution for pie chart
+      order_status_distribution: ordersByStatus.map((o) => ({
+        status: o.status || 'Unknown',
+        count: o._count?.id ?? 0,
+      })),
+      // Revenue by location for bar chart
+      revenue_by_location: revenueByCounty
+        .filter((r) => r.deliveryCounty)
+        .map((r) => ({
+          location: r.deliveryCounty || 'Unknown',
+          revenue: Math.round((r._sum?.totalAmount || 0) * 100) / 100,
+          orders: r._count?.id ?? 0,
+        }))
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 10),
+    };
+  }
+
+  /** Q2–Q5 (Q1 excluded per framework) + grade distribution for pie chart */
+  async getReportParametersQuality(filters: AnalyticsFiltersDto, user: any) {
+    const { start, end } = this.getDateRange(filters.timeRange, filters.dateRange);
+    const [qualityChecks, wastageAgg, wastageByCategory] = await Promise.all([
+      this.prisma.qualityCheck.findMany({ where: { checkedAt: { gte: start, lte: end } }, select: { qualityGrade: true, approved: true } }),
+      this.prisma.wastageEntry.aggregate({ where: { recordedAt: { gte: start, lte: end } }, _sum: { quantity: true } }),
+      this.prisma.wastageEntry.groupBy({ by: ['category'], where: { recordedAt: { gte: start, lte: end } }, _sum: { quantity: true } }),
+    ]);
+    const totalChecks = qualityChecks.length;
+    const gradeACount = qualityChecks.filter((q) => q.qualityGrade === 'A').length;
+    const gradeBCount = qualityChecks.filter((q) => q.qualityGrade === 'B').length;
+    const gradeCCount = qualityChecks.filter((q) => q.qualityGrade === 'C').length;
+    const gradeOtherCount = qualityChecks.filter((q) => q.qualityGrade !== 'A' && q.qualityGrade !== 'B' && q.qualityGrade !== 'C').length;
+    const approvedCount = qualityChecks.filter((q) => q.approved).length;
+    const rejectedCount = totalChecks - approvedCount;
+    return {
+      quality_grade_a_pct: totalChecks > 0 ? Math.round((gradeACount / totalChecks) * 10000) / 100 : 0,
+      quality_approved_count: approvedCount,
+      quality_rejected_count: rejectedCount,
+      wastage_quantity_kg: Math.round((wastageAgg._sum.quantity || 0) * 100) / 100,
+      wastage_count_by_category: wastageByCategory.map((r) => ({ category: r.category, quantity_kg: r._sum.quantity || 0 })),
+      // Grade distribution for pie chart
+      grade_distribution: [
+        { grade: 'A', count: gradeACount },
+        { grade: 'B', count: gradeBCount },
+        { grade: 'C', count: gradeCCount },
+        { grade: 'Other', count: gradeOtherCount },
+      ].filter((g) => g.count > 0),
+      // Approval distribution for pie chart
+      approval_distribution: [
+        { status: 'Approved', count: approvedCount },
+        { status: 'Rejected', count: rejectedCount },
+      ].filter((s) => s.count > 0),
+    };
+  }
+
+  /** O1–O5, A1, A2 + stock flow comparison, inventory by status */
+  async getReportParametersOperational(filters: AnalyticsFiltersDto, user: any) {
+    const { start, end } = this.getDateRange(filters.timeRange, filters.dateRange);
+    const [stockIn, stockOut, inventoryFresh, inventoryByStatus, centers, activityCount, activityByAction, stockByCenter] = await Promise.all([
+      this.prisma.stockTransaction.aggregate({ where: { type: 'STOCK_IN', createdAt: { gte: start, lte: end } }, _sum: { quantity: true } }),
+      this.prisma.stockTransaction.aggregate({ where: { type: 'STOCK_OUT', createdAt: { gte: start, lte: end } }, _sum: { quantity: true } }),
+      this.prisma.inventoryItem.aggregate({ where: { status: 'FRESH' }, _sum: { quantity: true } }),
+      this.prisma.inventoryItem.groupBy({ by: ['status'], _sum: { quantity: true } }),
+      this.prisma.aggregationCenter.findMany({ where: { isActive: true }, select: { id: true, name: true, county: true, subCounty: true } }),
+      this.prisma.activityLog.count({ where: { createdAt: { gte: start, lte: end } } }),
+      this.prisma.activityLog.groupBy({ by: ['action'], where: { createdAt: { gte: start, lte: end } }, _count: { id: true } }),
+      this.prisma.stockTransaction.groupBy({
+        by: ['centerId'],
+        where: { createdAt: { gte: start, lte: end } },
+        _sum: { quantity: true },
+        _count: { id: true },
+      }),
+    ]);
+    const centerIdsWithActivity = await this.prisma.stockTransaction.findMany({ where: { createdAt: { gte: start, lte: end } }, select: { centerId: true }, distinct: ['centerId'] });
+    const stockInKg = Math.round((stockIn._sum.quantity || 0) * 100) / 100;
+    const stockOutKg = Math.round((stockOut._sum.quantity || 0) * 100) / 100;
+    // Map center IDs to names for stock by center
+    const centerMap = new Map(centers.map((c) => [c.id, c.name]));
+    return {
+      stock_in_quantity_kg: stockInKg,
+      stock_out_quantity_kg: stockOutKg,
+      inventory_fresh_kg: Math.round((inventoryFresh._sum.quantity || 0) * 100) / 100,
+      centers_count: centers.length,
+      centers_with_activity_count: centerIdsWithActivity.length,
+      activity_log_count: activityCount,
+      activity_by_action: activityByAction.map((r) => ({ action: r.action, count: r._count.id })),
+      // Stock flow comparison for bar chart
+      stock_flow_comparison: [
+        { type: 'Stock In', quantity_kg: stockInKg },
+        { type: 'Stock Out', quantity_kg: stockOutKg },
+        { type: 'Net Change', quantity_kg: Math.round((stockInKg - stockOutKg) * 100) / 100 },
+      ],
+      // Inventory by status for pie chart
+      inventory_by_status: inventoryByStatus.map((s) => ({
+        status: s.status || 'Unknown',
+        quantity_kg: Math.round((s._sum.quantity || 0) * 100) / 100,
+      })),
+      // Stock by center for bar chart (top 10)
+      stock_by_center: stockByCenter
+        .map((s) => ({
+          center: centerMap.get(s.centerId) || s.centerId || 'Unknown',
+          quantity_kg: Math.round((s._sum.quantity || 0) * 100) / 100,
+          transactions: s._count.id,
+        }))
+        .sort((a, b) => b.quantity_kg - a.quantity_kg)
+        .slice(0, 10),
+    };
+  }
+
+  /** U1–U8, A1, A2 + role/status distributions for charts */
+  async getReportParametersUsers(filters: AnalyticsFiltersDto, user: any) {
+    const { start, end } = this.getDateRange(filters.timeRange, filters.dateRange);
+    const periodDays = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    const previousEnd = new Date(start);
+    const previousStart = new Date(start);
+    previousStart.setDate(previousStart.getDate() - periodDays);
+    const [totalUsers, previousUsers, totalFarmers, totalBuyers, newFarmers, newBuyers, activeUsers, lastLoginCount, usersByRole, usersByStatus] = await Promise.all([
+      this.prisma.profile.count({ where: { createdAt: { lte: end } } }),
+      this.prisma.profile.count({ where: { createdAt: { lte: previousEnd } } }),
+      this.prisma.profile.count({ where: { user: { role: 'FARMER' }, createdAt: { lte: end } } }),
+      this.prisma.profile.count({ where: { user: { role: 'BUYER' }, createdAt: { lte: end } } }),
+      this.prisma.profile.count({ where: { user: { role: 'FARMER' }, createdAt: { gte: start, lte: end } } }),
+      this.prisma.profile.count({ where: { user: { role: 'BUYER' }, createdAt: { gte: start, lte: end } } }),
+      this.prisma.user.count({ where: { status: 'ACTIVE' } }),
+      this.prisma.user.count({ where: { lastLogin: { gte: start, lte: end } } }),
+      this.prisma.user.groupBy({ by: ['role'], _count: { id: true } }),
+      this.prisma.user.groupBy({ by: ['status'], _count: { id: true } }),
+    ]);
+    const userGrowthRate = previousUsers > 0 ? Math.round(((totalUsers - previousUsers) / previousUsers) * 10000) / 100 : 0;
+    return {
+      total_users: totalUsers,
+      total_farmers: totalFarmers,
+      total_buyers: totalBuyers,
+      user_growth_rate: userGrowthRate,
+      new_farmers_in_period: newFarmers,
+      new_buyers_in_period: newBuyers,
+      active_users_count: activeUsers,
+      last_login_count: lastLoginCount,
+      // User role distribution for pie chart
+      user_role_distribution: usersByRole.map((r) => ({
+        role: r.role || 'Unknown',
+        count: r._count.id,
+      })),
+      // User status distribution for pie chart
+      user_status_distribution: usersByStatus.map((s) => ({
+        status: s.status || 'Unknown',
+        count: s._count.id,
+      })),
+      // New users comparison (farmers vs buyers in period)
+      new_users_comparison: [
+        { type: 'Farmers', count: newFarmers },
+        { type: 'Buyers', count: newBuyers },
+      ],
+    };
+  }
+
+  /** G1–G4 */
+  async getReportParametersGeographic(filters: AnalyticsFiltersDto, user: any) {
+    const [farmersBySubCounty, farmersByCounty, centersByLocation] = await Promise.all([
+      this.prisma.profile.groupBy({ by: ['subCounty'], where: { user: { role: 'FARMER' } }, _count: { id: true } }),
+      this.prisma.profile.groupBy({ by: ['county'], where: { user: { role: 'FARMER' } }, _count: { id: true } }),
+      this.prisma.aggregationCenter.groupBy({ by: ['county', 'subCounty'], where: { isActive: true }, _count: { id: true } }),
+    ]);
+    return {
+      farmers_by_subcounty: farmersBySubCounty.map((r) => ({ subCounty: r.subCounty || 'Unknown', count: r._count.id })),
+      farmers_by_county: farmersByCounty.map((r) => ({ county: r.county || 'Unknown', count: r._count.id })),
+      centers_by_location: centersByLocation.map((r) => ({ county: r.county || '', subCounty: r.subCounty || '', count: r._count.id })),
+    };
+  }
+
+  /** FG1–FG3 */
+  async getReportParametersFarmerGroups(filters: AnalyticsFiltersDto, user: any) {
+    const [groups, farmersUnassigned] = await Promise.all([
+      this.prisma.farmerGroup.findMany({ where: { isActive: true }, select: { id: true, county: true, subCounty: true, memberCount: true } }),
+      this.prisma.profile.count({ where: { user: { role: 'FARMER' }, farmerGroupId: null } }),
+    ]);
+    const farmer_group_members_total = groups.reduce((s, g) => s + (g.memberCount || 0), 0);
+    return {
+      farmer_groups_count: groups.length,
+      farmer_group_members_total,
+      farmers_unassigned_count: farmersUnassigned,
+    };
+  }
+
+  /** E1–E3 + evidence coverage metrics for gauges and comparisons */
+  async getReportParametersTransactionEvidence(filters: AnalyticsFiltersDto, user: any) {
+    const { start, end } = this.getDateRange(filters.timeRange, filters.dateRange);
+    const periodWhere = { createdAt: { gte: start, lte: end } };
+    const [ordersWithEvidence, ordersDelivered, totalOrders, disputedOrders, disputedPayments, ordersWithoutEvidence] = await Promise.all([
+      this.prisma.payment.count({ where: { orderId: { not: null }, OR: [{ paymentEvidence: { not: null } }, { confirmedAt: { not: null } }], ...periodWhere } }),
+      this.prisma.marketplaceOrder.count({ where: { status: { in: ['COMPLETED', 'DELIVERED'] }, ...periodWhere } }),
+      this.prisma.marketplaceOrder.count({ where: periodWhere }),
+      this.prisma.marketplaceOrder.count({ where: { status: 'DISPUTED', ...periodWhere } }),
+      this.prisma.payment.count({ where: { status: 'DISPUTED', ...periodWhere } }),
+      this.prisma.payment.count({ where: { orderId: { not: null }, paymentEvidence: null, confirmedAt: null, ...periodWhere } }),
+    ]);
+    const evidenceCoveragePct = totalOrders > 0 ? Math.round((ordersWithEvidence / totalOrders) * 10000) / 100 : 0;
+    const deliveryRatePct = totalOrders > 0 ? Math.round((ordersDelivered / totalOrders) * 10000) / 100 : 0;
+    const disputeRatePct = totalOrders > 0 ? Math.round(((disputedOrders + disputedPayments) / totalOrders) * 10000) / 100 : 0;
+    return {
+      orders_with_payment_evidence: ordersWithEvidence,
+      orders_without_evidence: ordersWithoutEvidence,
+      orders_delivered_count: ordersDelivered,
+      total_orders_in_period: totalOrders,
+      disputed_orders_count: disputedOrders + disputedPayments,
+      // Coverage percentages for gauges
+      evidence_coverage_pct: evidenceCoveragePct,
+      delivery_rate_pct: deliveryRatePct,
+      dispute_rate_pct: disputeRatePct,
+      // Evidence distribution for pie chart
+      evidence_distribution: [
+        { status: 'With Evidence', count: ordersWithEvidence },
+        { status: 'Without Evidence', count: ordersWithoutEvidence },
+      ].filter((e) => e.count > 0),
+      // Order outcome distribution for pie chart
+      order_outcome_distribution: [
+        { outcome: 'Delivered', count: ordersDelivered },
+        { outcome: 'Disputed', count: disputedOrders + disputedPayments },
+        { outcome: 'Other', count: Math.max(0, totalOrders - ordersDelivered - disputedOrders - disputedPayments) },
+      ].filter((o) => o.count > 0),
+    };
+  }
+
+  // ============ Reports ============
+
+  /** Template definitions per REPORTING_FRAMEWORK.md §3 — enhanced for robust multi-section reports */
+  private getReportTemplateDefinitions() {
+    return [
+      // Performance: comprehensive KPIs, trends, quality, users
+      { id: 'performance', name: 'Performance Report', description: 'Platform performance vs targets', category: 'performance', frequency: 'monthly', type: 'performance', availableFormats: ['pdf', 'excel', 'csv'], parameterSets: ['dashboard', 'trends', 'staff', 'users', 'quality'] },
+      // Financial: revenue, payments, trends, volume
+      { id: 'financial', name: 'Financial Report', description: 'Revenue, orders, and financial summary', category: 'financial', frequency: 'monthly', type: 'sales', availableFormats: ['pdf', 'excel', 'csv'], parameterSets: ['dashboard', 'trends', 'financial'] },
+      // Operational: stock, centers, activity, quality (wastage), trends
+      { id: 'operational', name: 'Operational Report', description: 'Operations and volume metrics', category: 'operational', frequency: 'weekly', type: 'stock', availableFormats: ['pdf', 'excel', 'csv'], parameterSets: ['dashboard', 'trends', 'operational', 'quality', 'staff'] },
+      // Compliance: quality, evidence, activity, trends
+      { id: 'compliance', name: 'Compliance Report', description: 'Quality and compliance metrics', category: 'compliance', frequency: 'monthly', type: 'quality', availableFormats: ['pdf', 'csv'], parameterSets: ['dashboard', 'trends', 'quality', 'transactionEvidence', 'operational'] },
+      // User activity: users, activity, geographic, trends
+      { id: 'user-activity', name: 'User Activity Report', description: 'User growth and activity', category: 'operational', frequency: 'weekly', type: 'farmer', availableFormats: ['pdf', 'excel', 'csv'], parameterSets: ['dashboard', 'trends', 'users', 'geographic', 'farmerGroups'] },
+      // Transaction evidence: evidence, financial, trends
+      { id: 'transaction-evidence', name: 'Transaction Evidence Report', description: 'Transaction and delivery evidence', category: 'compliance', frequency: 'monthly', type: 'sales', availableFormats: ['pdf', 'csv'], parameterSets: ['dashboard', 'trends', 'transactionEvidence', 'financial'] },
+      // Data quality: quality, users, farmer groups, geographic
+      { id: 'data-quality', name: 'Data Quality Report', description: 'Data completeness and quality scores', category: 'operational', frequency: 'weekly', type: 'quality', availableFormats: ['pdf', 'csv'], parameterSets: ['dashboard', 'quality', 'farmerGroups', 'users', 'geographic'] },
+      // Partner engagement: users, farmer groups, geographic, ratings, trends
+      { id: 'partner-engagement', name: 'Partner Engagement Report', description: 'Farmer and buyer engagement', category: 'performance', frequency: 'monthly', type: 'farmer', availableFormats: ['pdf', 'excel', 'csv'], parameterSets: ['dashboard', 'trends', 'users', 'geographic', 'farmerGroups', 'staff'] },
+      // Geographic: location breakdowns, users, centers, trends
+      { id: 'geographic', name: 'Geographic Distribution Report', description: 'Farmers and centers by location', category: 'operational', frequency: 'monthly', type: 'quality', availableFormats: ['pdf', 'excel', 'csv'], parameterSets: ['dashboard', 'trends', 'geographic', 'farmerGroups', 'operational', 'staff'] },
+      // Quality summary: quality, operational (for comparison), trends
+      { id: 'quality-summary', name: 'Quality Summary Report', description: 'Quality and wastage analysis', category: 'compliance', frequency: 'monthly', type: 'quality', availableFormats: ['pdf', 'csv'], parameterSets: ['dashboard', 'trends', 'quality', 'operational'] },
+    ];
+  }
+
+  getReportTemplates() {
+    return this.getReportTemplateDefinitions().map(({ parameterSets, ...rest }) => rest);
+  }
+
+  /**
+   * Build filters from report parameters (timeRange, startDate, endDate)
+   */
+  private buildReportFilters(parameters: Record<string, unknown>): AnalyticsFiltersDto {
+    const timeRangeMap: Record<string, TimeRange> = {
+      today: TimeRange.DAY,
+      day: TimeRange.DAY,
+      week: TimeRange.WEEK,
+      month: TimeRange.MONTH,
+      quarter: TimeRange.QUARTER,
+      year: TimeRange.YEAR,
+    };
+    const timeRangeParam = (parameters?.timeRange as string) || 'month';
+    const timeRange = timeRangeMap[timeRangeParam] || TimeRange.MONTH;
+    const filters: AnalyticsFiltersDto = { timeRange };
+    if (parameters?.startDate && parameters?.endDate) {
+      filters.dateRange = { start: parameters.startDate as string, end: parameters.endDate as string };
+    }
+    if (parameters?.county != null) (filters as any).county = parameters.county as string;
+    if (parameters?.subcounty != null) (filters as any).subcounty = parameters.subcounty as string;
+    return filters;
+  }
+
+  /**
+   * Apply optional county/subcounty scoping for staff with assigned geography (REPORTING_FRAMEWORK.md §5).
+   */
+  private async applyReportScopeFromUser(filters: AnalyticsFiltersDto, user: any): Promise<void> {
+    if (!user?.id) return;
+    const profile = await this.prisma.profile.findUnique({
+      where: { userId: user.id },
+      select: { assignedCounty: true, assignedSubCounty: true, hasAllAccess: true },
+    });
+    if (!profile) return;
+    if (profile.hasAllAccess) return;
+    if (profile.assignedCounty || profile.assignedSubCounty) {
+      if (profile.assignedCounty && !filters.county) (filters as any).county = profile.assignedCounty;
+      if (profile.assignedSubCounty && !filters.subcounty) (filters as any).subcounty = profile.assignedSubCounty;
+    }
+  }
+
+  /**
+   * Generate report by template ID: calls the parameter sets defined for the template (REPORTING_FRAMEWORK.md §3).
+   */
+  async getReportByTemplate(templateId: string, parameters: Record<string, unknown>, user: any) {
+    const filters = this.buildReportFilters(parameters);
+    await this.applyReportScopeFromUser(filters, user);
+    const definitions = this.getReportTemplateDefinitions();
+    const tpl = definitions.find((t: any) => t.id === templateId);
+    const sets: string[] = (tpl as any)?.parameterSets || ['dashboard', 'trends', 'staff'];
+
+    const result: any = {
+      templateId,
+      templateName: tpl?.name || templateId,
+      generatedAt: new Date().toISOString(),
+      generatedBy: user?.id,
+      parameters: { timeRange: parameters?.timeRange || 'month', ...parameters },
+      dateRange: { start: '', end: '' },
+      format: parameters?.format || 'pdf',
+    };
+
+    const promises: Promise<any>[] = [];
+    const keys: string[] = [];
+    const add = (key: string, fn: () => Promise<any>, defaultValue: any) => {
+      keys.push(key);
+      promises.push(sets.includes(key === 'summary' ? 'dashboard' : key === 'staffAnalytics' ? 'staff' : key) ? fn() : Promise.resolve(defaultValue));
+    };
+    add('summary', () => this.getDashboardStats(filters, user), null);
+    add('trends', () => this.getTrends(filters, user), []);
+    add('staffAnalytics', () => this.getStaffAnalytics(filters, user), null);
+    add('financial', () => this.getReportParametersFinancial(filters, user), null);
+    add('quality', () => this.getReportParametersQuality(filters, user), null);
+    add('operational', () => this.getReportParametersOperational(filters, user), null);
+    add('users', () => this.getReportParametersUsers(filters, user), null);
+    add('geographic', () => this.getReportParametersGeographic(filters, user), null);
+    add('farmerGroups', () => this.getReportParametersFarmerGroups(filters, user), null);
+    add('transactionEvidence', () => this.getReportParametersTransactionEvidence(filters, user), null);
+
+    const resolved = await Promise.all(promises);
+    keys.forEach((k, i) => {
+      result[k] = resolved[i];
+    });
+    if (result.summary?.dateRange) {
+      result.dateRange = result.summary.dateRange;
+    }
+    return result;
+  }
+
+  /**
+   * Generate report by template ID (entry point for API). Saves the report and returns it with id.
+   */
+  async generateReport(templateId: string, parameters: Record<string, unknown>, user: any) {
+    const result = await this.getReportByTemplate(templateId, parameters, user);
+    const definitions = this.getReportTemplateDefinitions();
+    const tpl = definitions.find((t: any) => t.id === templateId);
+    const templateName = (tpl as any)?.name || templateId;
+    const saved = await this.prisma.savedReport.create({
+      data: {
+        templateId,
+        templateName,
+        parameters: (result.parameters || {}) as any,
+        payload: result as any,
+        generatedBy: user?.id ?? null,
+      },
+    });
+    return { ...result, id: saved.id };
+  }
+
+  /**
+   * List saved/generated reports (newest first).
+   */
+  async listSavedReports(options?: { limit?: number; templateId?: string }) {
+    const limit = Math.min(Math.max(options?.limit ?? 50, 1), 200);
+    const where: any = {};
+    if (options?.templateId) where.templateId = options.templateId;
+    const list = await this.prisma.savedReport.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        templateId: true,
+        templateName: true,
+        parameters: true,
+        generatedBy: true,
+        createdAt: true,
+      },
+    });
+    return list;
+  }
+
+  /**
+   * Get a single saved report by id (full payload for display/export).
+   */
+  async getSavedReportById(id: string) {
+    const row = await this.prisma.savedReport.findUnique({
+      where: { id },
+    });
+    if (!row) return null;
+    return row.payload as any;
   }
 }

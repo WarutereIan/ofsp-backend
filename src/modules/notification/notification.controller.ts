@@ -15,6 +15,7 @@ import { NotificationService } from './notification.service';
 import { WebPushService } from './web-push.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 import { MarkAsReadDto } from './dto';
 
 @ApiTags('Notifications')
@@ -87,6 +88,7 @@ export class NotificationController {
 
   // ============ Web Push Subscription Management ============
 
+  @Public()
   @Get('push/public-key')
   @ApiOperation({ summary: 'Get VAPID public key for web push subscription' })
   async getPublicKey() {

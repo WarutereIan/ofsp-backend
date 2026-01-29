@@ -138,7 +138,7 @@ if (minPrice > 0 && maxPrice > 0) {
 
 **Test Data:**
 - Revenue: 38,500
-- Expected `platformFee`: 770 (38,500 * 0.02)
+- (platform fee removed from analytics)
 
 ---
 
@@ -242,7 +242,7 @@ for (let i = 1; i < entries.length; i++) {
 - `activeSuppliers`: 1
 
 ### Staff Analytics:
-- `platformFee`: 770 (2% of 38,500)
+- (platform fee removed)
 - `totalVolume`: 800kg
 
 ---

@@ -18,6 +18,9 @@ import { PaymentModule } from './modules/payment/payment.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { BadgeModule } from './modules/badge/badge.module';
+import { UssdModule } from './modules/ussd/ussd.module';
+import { StaffModule } from './modules/staff/staff.module';
+import { FarmerGroupsModule } from './modules/farmer-groups/farmer-groups.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -60,7 +63,9 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
     NotificationModule,
     AnalyticsModule,
     BadgeModule,
-    // StaffModule,
+    UssdModule,
+    StaffModule,
+    FarmerGroupsModule,
   ],
   controllers: [AppController],
   providers: [

@@ -38,7 +38,15 @@ export class ProfileService {
     const where: any = {};
 
     if (filters?.role) {
-      where.user = { role: filters.role };
+      // Map frontend role names to backend enum values
+      const roleMapping: Record<string, string> = {
+        'county_officer': 'EXTENSION_OFFICER',
+        'extension_officer': 'EXTENSION_OFFICER',
+      };
+      
+      // Use mapping if available, otherwise convert to uppercase
+      const mappedRole = roleMapping[filters.role.toLowerCase()] || filters.role.toUpperCase();
+      where.user = { role: mappedRole };
     }
     if (filters?.county) {
       where.county = filters.county;

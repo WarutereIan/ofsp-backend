@@ -78,6 +78,12 @@ export class AggregationService {
     const randomSuffix = Math.floor(Math.random() * 1000000).toString().padStart(6, '0');
     const centerCode = `${codePrefix}-${dateStr}-${randomSuffix}`;
 
+    // mainCenterId must be null for main centers; only set for satellite with valid id (avoids FK violation)
+    const mainCenterId =
+      data.centerType === 'satellite' && data.mainCenterId?.trim()
+        ? data.mainCenterId.trim()
+        : null;
+
     return this.prisma.aggregationCenter.create({
       data: {
         name: data.name,
@@ -88,7 +94,7 @@ export class AggregationService {
         ward: data.ward,
         coordinates: data.coordinates,
         centerType: data.centerType as any,
-        mainCenterId: data.mainCenterId,
+        mainCenterId,
         totalCapacity: data.totalCapacity,
         managerId: data.managerId,
         managerName: data.managerName || '',
@@ -909,6 +915,34 @@ export class AggregationService {
       }
     }
 
+    // Also notify the farmer for general stock-in (even when not tied to an order).
+    // This covers manual stock-in flows where we still capture farmerId/batchId.
+    if (!validOrderId && farmerId) {
+      try {
+        await this.notificationHelperService.createNotification({
+          userId: farmerId,
+          type: 'STOCK_TRANSACTION',
+          title: 'Stock Received at Center',
+          message: `Your produce (${data.variety}, ${data.quantity}kg, Grade ${data.qualityGrade}) has been received at ${stockTransaction.center?.name || 'the aggregation center'} (Batch: ${batchId}).`,
+          priority: 'MEDIUM',
+          entityType: 'STOCK_TRANSACTION',
+          entityId: stockTransaction.id,
+          actionUrl: `/aggregation/stock-transactions`,
+          actionLabel: 'View Stock Transaction',
+          metadata: {
+            transactionNumber: stockTransaction.transactionNumber,
+            batchId,
+            centerId: data.centerId,
+            variety: data.variety,
+            quantity: data.quantity,
+            qualityGrade: data.qualityGrade,
+          },
+        });
+      } catch (error) {
+        console.error('Failed to create farmer stock-in notification:', error);
+      }
+    }
+
     // Create activity log
     await this.activityLogService.createActivityLog({
       userId,
@@ -1028,6 +1062,32 @@ export class AggregationService {
       },
     });
 
+    // If batchId is provided, capture farmer details from inventory BEFORE decrementing.
+    // This lets us notify the farmer for stock-out even when not tied to an order.
+    let batchFarmerId: string | null = null;
+    let batchFarmerName: string | null = null;
+    let batchVariety: string | null = null;
+    let batchQualityGrade: string | null = null;
+    if (data.batchId) {
+      try {
+        const inv = await this.prisma.inventoryItem.findUnique({
+          where: { batchId: data.batchId },
+          select: {
+            farmerId: true,
+            farmerName: true,
+            variety: true,
+            qualityGrade: true,
+          },
+        });
+        batchFarmerId = inv?.farmerId || null;
+        batchFarmerName = inv?.farmerName || null;
+        batchVariety = inv?.variety || null;
+        batchQualityGrade = (inv?.qualityGrade as any) || null;
+      } catch (error) {
+        console.error('Failed to load inventory item for farmer notification:', error);
+      }
+    }
+
     // Update inventory item quantity if batchId is provided
     if (data.batchId) {
       try {
@@ -1096,7 +1156,7 @@ export class AggregationService {
       }
     }
 
-    // Create notifications (per lifecycle: buyer, transport provider)
+    // Create notifications (per lifecycle: buyer, farmer, transport provider)
     if (validOrderId && stockTransaction.order) {
       try {
         // To Buyer
@@ -1108,16 +1168,82 @@ export class AggregationService {
             message: `Order #${stockTransaction.order.orderNumber} is out for delivery`,
             priority: 'MEDIUM',
             entityType: 'ORDER',
-          entityId: validOrderId,
-          actionUrl: `/orders/${validOrderId}`,
+            entityId: validOrderId,
+            actionUrl: `/orders/${validOrderId}`,
             actionLabel: 'View Order',
             metadata: { orderNumber: stockTransaction.order.orderNumber },
           });
         }
 
-        // Note: Transport provider notification would be created when transport request is created
+        // To Farmer (order owner)
+        if (stockTransaction.order.farmerId) {
+          await this.notificationHelperService.createNotification({
+            userId: stockTransaction.order.farmerId,
+            type: 'ORDER',
+            title: 'Order Dispatched',
+            message: `Your order #${stockTransaction.order.orderNumber} has been dispatched from the aggregation center.`,
+            priority: 'MEDIUM',
+            entityType: 'ORDER',
+            entityId: validOrderId,
+            actionUrl: `/orders/${validOrderId}`,
+            actionLabel: 'View Order',
+            metadata: { orderNumber: stockTransaction.order.orderNumber },
+          });
+        }
+
+        // Note: Transport provider notification is created when transport request is created
       } catch (error) {
-        console.error('Failed to create notifications:', error);
+        console.error('Failed to create stock-out notifications:', error);
+      }
+    } else {
+      // Stock-out not tied to an order: notify buyer (if provided) and farmer (if resolvable via batch inventory).
+      try {
+        if (data.buyerId) {
+          await this.notificationHelperService.createNotification({
+            userId: data.buyerId,
+            type: 'STOCK_TRANSACTION',
+            title: 'Stock Released',
+            message: `Stock has been released from ${stockTransaction.center?.name || 'the aggregation center'} (Batch: ${data.batchId || 'N/A'}).`,
+            priority: 'MEDIUM',
+            entityType: 'STOCK_TRANSACTION',
+            entityId: stockTransaction.id,
+            actionUrl: `/aggregation/stock-transactions`,
+            actionLabel: 'View Stock Transaction',
+            metadata: {
+              transactionNumber: stockTransaction.transactionNumber,
+              batchId: data.batchId,
+              centerId: data.centerId,
+              quantity: data.quantity,
+            },
+          });
+        }
+
+        if (batchFarmerId) {
+          const varietyLabel = batchVariety || data.variety;
+          const gradeLabel = batchQualityGrade || (data.qualityGrade as any) || 'N/A';
+          const farmerNameLabel = batchFarmerName ? `, ${batchFarmerName}` : '';
+          await this.notificationHelperService.createNotification({
+            userId: batchFarmerId,
+            type: 'STOCK_TRANSACTION',
+            title: 'Stock Dispatched',
+            message: `Your produce${farmerNameLabel} (${varietyLabel}, ${data.quantity}kg, Grade ${gradeLabel}) has been dispatched from ${stockTransaction.center?.name || 'the aggregation center'} (Batch: ${data.batchId}).`,
+            priority: 'MEDIUM',
+            entityType: 'STOCK_TRANSACTION',
+            entityId: stockTransaction.id,
+            actionUrl: `/aggregation/stock-transactions`,
+            actionLabel: 'View Stock Transaction',
+            metadata: {
+              transactionNumber: stockTransaction.transactionNumber,
+              batchId: data.batchId,
+              centerId: data.centerId,
+              variety: varietyLabel,
+              quantity: data.quantity,
+              qualityGrade: gradeLabel,
+            },
+          });
+        }
+      } catch (error) {
+        console.error('Failed to create non-order stock-out notifications:', error);
       }
     }
 
@@ -1161,12 +1287,125 @@ export class AggregationService {
     });
   }
 
+  /**
+   * Get inventory with stock transaction details (for compliance checking)
+   * Includes grading matrix criteria from the original stock transaction
+   */
+  async getInventoryWithStockTransactions(filters?: {
+    centerId?: string;
+    farmerId?: string;
+    qualityGrade?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    county?: string;
+    subCounty?: string;
+    centerType?: string;
+  }) {
+    const where: any = {};
+    
+    if (filters?.centerId) {
+      where.centerId = filters.centerId;
+    }
+    if (filters?.farmerId) {
+      where.farmerId = filters.farmerId;
+    }
+    if (filters?.qualityGrade) {
+      where.qualityGrade = filters.qualityGrade;
+    }
+    
+    // Date range filtering (by stockInDate)
+    if (filters?.dateFrom || filters?.dateTo) {
+      where.stockInDate = {};
+      if (filters.dateFrom) {
+        where.stockInDate.gte = new Date(filters.dateFrom);
+      }
+      if (filters.dateTo) {
+        where.stockInDate.lte = new Date(filters.dateTo);
+      }
+    }
+
+    // Jurisdiction filtering via center relation
+    if (filters?.county || filters?.subCounty || filters?.centerType) {
+      where.center = {};
+      if (filters.county) {
+        where.center.county = filters.county;
+      }
+      if (filters.subCounty) {
+        where.center.subCounty = filters.subCounty;
+      }
+      if (filters.centerType) {
+        where.center.centerType = filters.centerType.toUpperCase();
+      }
+    }
+
+    // Include stock status filter - get all batches for compliance checking (not just FRESH/AGING)
+    // where.status = { in: ['FRESH', 'AGING'] };
+
+    const inventoryItems = await this.prisma.inventoryItem.findMany({
+      where,
+      include: {
+        center: true,
+        farmer: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+      orderBy: { stockInDate: 'desc' },
+    });
+
+    // Fetch associated stock transactions to get grading matrix criteria
+    const stockTransactionIds = inventoryItems
+      .map(item => item.stockTransactionId)
+      .filter((id): id is string => id !== null);
+
+    const stockTransactions = stockTransactionIds.length > 0
+      ? await this.prisma.stockTransaction.findMany({
+          where: {
+            id: { in: stockTransactionIds },
+            // Include both STOCK_IN and TRANSFER transactions that have grading data
+            type: { in: ['STOCK_IN', 'TRANSFER'] },
+          },
+          select: {
+            id: true,
+            batchId: true,
+            weightRange: true,
+            colorIntensity: true,
+            physicalCondition: true,
+            freshness: true,
+            daysSinceHarvest: true,
+            qualityGrade: true,
+            createdAt: true,
+          },
+        })
+      : [];
+
+    // Create a map of batchId -> stock transaction for quick lookup
+    const stockTransactionMap = new Map<string, typeof stockTransactions[0]>();
+    stockTransactions.forEach(st => {
+      if (st.batchId) {
+        stockTransactionMap.set(st.batchId, st);
+      }
+    });
+
+    // Enrich inventory items with stock transaction data
+    return inventoryItems.map(item => ({
+      ...item,
+      stockTransaction: item.batchId ? stockTransactionMap.get(item.batchId) || null : null,
+    }));
+  }
+
   // ============ Quality Checks ============
 
   async getQualityChecks(filters?: {
     centerId?: string;
     orderId?: string;
     transactionId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    county?: string;
+    subCounty?: string;
+    centerType?: string;
   }) {
     const where: any = {};
 
@@ -1178,6 +1417,31 @@ export class AggregationService {
     }
     if (filters?.transactionId) {
       where.transactionId = filters.transactionId;
+    }
+
+    // Date range filtering (by checkedAt)
+    if (filters?.dateFrom || filters?.dateTo) {
+      where.checkedAt = {};
+      if (filters.dateFrom) {
+        where.checkedAt.gte = new Date(filters.dateFrom);
+      }
+      if (filters.dateTo) {
+        where.checkedAt.lte = new Date(filters.dateTo);
+      }
+    }
+
+    // Jurisdiction filtering via center relation
+    if (filters?.county || filters?.subCounty || filters?.centerType) {
+      where.center = {};
+      if (filters.county) {
+        where.center.county = filters.county;
+      }
+      if (filters.subCounty) {
+        where.center.subCounty = filters.subCounty;
+      }
+      if (filters.centerType) {
+        where.center.centerType = filters.centerType.toUpperCase();
+      }
     }
 
     return this.prisma.qualityCheck.findMany({

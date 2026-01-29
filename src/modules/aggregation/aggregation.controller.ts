@@ -167,6 +167,30 @@ export class AggregationController {
     return this.aggregationService.getInventory(centerId, farmerId, qualityGrade);
   }
 
+  @Get('inventory/batches')
+  @ApiOperation({ summary: 'Get inventory batches with stock transaction details for compliance checking' })
+  async getInventoryBatches(
+    @Query('centerId') centerId?: string,
+    @Query('farmerId') farmerId?: string,
+    @Query('qualityGrade') qualityGrade?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('county') county?: string,
+    @Query('subCounty') subCounty?: string,
+    @Query('centerType') centerType?: string,
+  ) {
+    return this.aggregationService.getInventoryWithStockTransactions({
+      centerId,
+      farmerId,
+      qualityGrade,
+      dateFrom,
+      dateTo,
+      county,
+      subCounty,
+      centerType,
+    });
+  }
+
   // ============ Quality Checks ============
 
   @Get('quality-checks')
@@ -175,11 +199,21 @@ export class AggregationController {
     @Query('centerId') centerId?: string,
     @Query('orderId') orderId?: string,
     @Query('transactionId') transactionId?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('county') county?: string,
+    @Query('subCounty') subCounty?: string,
+    @Query('centerType') centerType?: string,
   ) {
     return this.aggregationService.getQualityChecks({
       centerId,
       orderId,
       transactionId,
+      dateFrom,
+      dateTo,
+      county,
+      subCounty,
+      centerType,
     });
   }
 

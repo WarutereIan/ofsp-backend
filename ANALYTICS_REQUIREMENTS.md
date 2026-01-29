@@ -377,7 +377,7 @@ Based on `ENTITY_LIFECYCLE_MAPPING.md`, the following entities generate analytic
 **Role-Specific Variations:**
 - **Farmer**: Include farmer-specific metrics (earnings, quantity delivered, quality score, ranking)
 - **Buyer**: Include buyer-specific metrics (volume sourced, price comparisons, quality acceptance)
-- **Staff**: Include platform-wide metrics (platform fee, all users)
+- **Staff**: Include platform-wide metrics (all users)
 - **Officer**: Include jurisdiction-specific metrics (farmers in area, production volume)
 - **Input Provider**: Include input-specific metrics (products, customers, revenue)
 - **Transport Provider**: Include transport-specific metrics (deliveries, earnings, ratings)
@@ -611,7 +611,6 @@ WHERE status IN ('completed', 'delivered')
 
 **Platform Fee:**
 ```sql
-SELECT SUM(total_amount) * 0.02 AS platform_fee
 FROM marketplace_order
 WHERE status IN ('completed', 'delivered')
   AND created_at BETWEEN :start_date AND :end_date
