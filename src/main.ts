@@ -22,6 +22,8 @@ async function bootstrap() {
   // CORS - Must be configured before other middleware
   const corsOrigins = configService.get('CORS_ORIGIN', 'http://localhost:5173,http://localhost:3000,https://ospf-frontend.vercel.app');
   const allowedOrigins = corsOrigins.split(',').map(origin => origin.trim());
+
+  console.log("allowedOrigins",allowedOrigins);
   
   app.enableCors({
     origin: (origin, callback) => {

@@ -23,11 +23,13 @@ import { LoginDto } from './dto/login.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
-// Cookie configuration
+// Cookie configuration for cross-origin auth
+// SameSite=None + Secure required for cross-origin cookies (frontend on vercel.app, backend on jirani.store)
+const isProduction = process.env.NODE_ENV === 'production';
 const COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax' as const,
+  secure: isProduction, // Must be true in production (HTTPS required)
+  sameSite: isProduction ? 'none' as const : 'lax' as const, // 'none' for cross-origin in prod
   path: '/',
 };
 
