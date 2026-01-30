@@ -20,7 +20,7 @@ async function bootstrap() {
   app.setGlobalPrefix(apiPrefix);
   
   // CORS - Must be configured before other middleware
-  const corsOrigins = configService.get('CORS_ORIGIN', 'http://localhost:5173,http://localhost:3000, https://ospf-frontend.vercel.app');
+  const corsOrigins = configService.get('CORS_ORIGIN', 'http://localhost:5173,http://localhost:3000,https://ospf-frontend.vercel.app');
   const allowedOrigins = corsOrigins.split(',').map(origin => origin.trim());
   
   app.enableCors({
