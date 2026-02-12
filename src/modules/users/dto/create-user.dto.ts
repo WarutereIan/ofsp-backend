@@ -10,7 +10,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 import { UserRole } from '@prisma/client';
 
 class CreateProfileDto {
@@ -69,10 +69,11 @@ class CreateProfileDto {
 }
 
 export class CreateUserDto {
-  @ApiProperty({ example: 'user@example.com' })
+  @ApiProperty({ example: 'user@example.com', required: false })
+  @Transform(({ value }) => (value === '' || value == null ? undefined : value))
+  @IsOptional()
   @IsEmail()
-  @IsNotEmpty()
-  email: string;
+  email?: string;
 
   @ApiProperty({ example: '+254712345678' })
   @IsPhoneNumber('KE')

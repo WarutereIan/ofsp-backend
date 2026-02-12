@@ -1,13 +1,16 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { EmailService } from '../notification/email.service';
 import * as bcrypt from 'bcrypt';
-import { UserRole, UserStatus } from '@prisma/client';
+import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import { isValidSubCounty } from '../../common/constants/locations';
-
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Optional() private emailService?: EmailService,
+  ) {}
 
   async findById(id: string) {
     const user = await this.prisma.user.findUnique({
@@ -97,7 +100,7 @@ export class UsersService {
    * Create a new user (admin only)
    */
   async createUser(data: {
-    email: string;
+    email?: string;
     phone: string;
     password: string;
     role: UserRole;
@@ -114,10 +117,11 @@ export class UsersService {
       hasAllAccess?: boolean;
     };
   }) {
+    const email = (data.email && data.email.trim()) || null;
     // Check if user already exists
     const existingUser = await this.prisma.user.findFirst({
       where: {
-        OR: [{ email: data.email }, { phone: data.phone }],
+        OR: [...(email ? [{ email }] : []), { phone: data.phone }],
       },
     });
 
@@ -153,14 +157,14 @@ export class UsersService {
     // Hash password
     const hashedPassword = await bcrypt.hash(data.password, 10);
 
-    // Create user with profile
+    // Create user with profile (email optional: pass null when empty; requires migration + prisma generate)
     const user = await this.prisma.user.create({
       data: {
-        email: data.email,
+        email,
         phone: data.phone,
         password: hashedPassword,
         role: data.role,
-        status: UserStatus.ACTIVE, // Admin-created users are active by default
+        status: UserStatus.ACTIVE,
         profile: {
           create: {
             firstName: data.profile.firstName,
@@ -194,7 +198,53 @@ export class UsersService {
       await this.updateFarmerGroupMemberCount(data.profile.farmerGroupId);
     }
 
+    // Send welcome email with assigned password if user has an email
+    const recipientEmail = (email || '').trim();
+    if (recipientEmail && this.emailService) {
+      const displayName =
+        [data.profile.firstName, data.profile.lastName].filter(Boolean).join(' ') || 'User';
+      const roleLabel = data.role.replace(/_/g, ' ').toLowerCase();
+      const subject = 'Your account has been created – welcome';
+      const html = this.buildWelcomeEmailHtml(displayName, roleLabel, data.password);
+      this.emailService
+        .sendNotificationToUser(user.id, { subject, html })
+        .catch((err) =>
+          console.error(`Failed to send welcome email to user ${user.id}:`, err?.message ?? err),
+        );
+    }
+
     return user;
+  }
+
+  /**
+   * Build HTML for welcome email including assigned password.
+   */
+  private buildWelcomeEmailHtml(displayName: string, roleLabel: string, password: string): string {
+    const escapedName = this.escapeHtml(displayName);
+    const escapedRole = this.escapeHtml(roleLabel);
+    const escapedPassword = this.escapeHtml(password);
+    return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Account created</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:20px;">
+  <h2 style="margin-top:0;">Welcome, ${escapedName}</h2>
+  <p style="color:#374151;line-height:1.5;">Your account has been created successfully. You have been registered as <strong>${escapedRole}</strong>.</p>
+  <p style="color:#374151;line-height:1.5;">Your assigned password is:</p>
+  <p style="background:#f3f4f6;padding:12px 16px;border-radius:8px;font-family:monospace;font-size:16px;letter-spacing:0.05em;">${escapedPassword}</p>
+  <p style="color:#6b7280;font-size:14px;">Please sign in and change this password after your first login.</p>
+  <p style="color:#9ca3af;font-size:12px;margin-top:24px;">This is an automated message from the platform.</p>
+</body>
+</html>`;
+  }
+
+  private escapeHtml(s: string): string {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   /**

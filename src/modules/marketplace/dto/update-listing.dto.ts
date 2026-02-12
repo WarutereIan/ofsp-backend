@@ -63,6 +63,29 @@ export class UpdateListingDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsEnum(['active', 'sold', 'inactive', 'pending'])
+  @IsString()
+  village?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  expectedReadyAt?: string; // ISO date string
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  aggregationCenterId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  quantityUnit?: string;
+
+  @ApiPropertyOptional({
+    enum: ['PENDING_LEAD_APPROVAL', 'REVISION_REQUESTED', 'ACTIVE', 'SOLD', 'INACTIVE', 'EXPIRED'],
+    description: 'Farmer may set PENDING_LEAD_APPROVAL to resubmit after revision',
+  })
+  @IsOptional()
+  @IsEnum(['PENDING_LEAD_APPROVAL', 'REVISION_REQUESTED', 'ACTIVE', 'SOLD', 'INACTIVE', 'EXPIRED', 'active', 'sold', 'inactive', 'pending'])
   status?: string;
 }

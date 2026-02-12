@@ -1,6 +1,7 @@
-import { Injectable, Inject, forwardRef, Optional } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { PrismaService } from '../../modules/prisma/prisma.service';
 import { WebPushService, PushNotificationPayload } from '../../modules/notification/web-push.service';
+import { EmailService } from '../../modules/notification/email.service';
 
 export type NotificationChannel = 'web-push' | 'email' | 'sms' | 'in-app';
 
@@ -24,6 +25,7 @@ export class NotificationHelperService {
   constructor(
     private prisma: PrismaService,
     @Optional() private webPushService?: WebPushService,
+    @Optional() private emailService?: EmailService,
   ) {}
 
   async createNotification(data: CreateNotificationDto) {
@@ -104,8 +106,25 @@ export class NotificationHelperService {
           break;
 
         case 'email':
-          // TODO: Implement email channel
-          console.log(`Email channel not yet implemented for notification to user ${data.userId}`);
+          if (this.emailService) {
+            promises.push(
+              this.emailService
+                .sendNotificationToUser(data.userId, {
+                  subject: data.title,
+                  text: data.message,
+                  actionUrl: data.actionUrl,
+                  actionLabel: data.actionLabel,
+                })
+                .then((result) => {
+                  if (!result.success && result.error) {
+                    console.error(`Failed to send email notification to user ${data.userId}:`, result.error);
+                  }
+                })
+                .catch((error) => {
+                  console.error(`Failed to send email notification to user ${data.userId}:`, error);
+                }),
+            );
+          }
           break;
 
         case 'sms':

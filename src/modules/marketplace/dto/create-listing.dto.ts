@@ -59,4 +59,24 @@ export class CreateListingDto {
   @IsOptional()
   @IsString()
   harvestDate?: string; // ISO date string
+
+  @ApiPropertyOptional({ description: 'Expected date/time when commodity will be ready at aggregation centre' })
+  @IsOptional()
+  @IsString()
+  expectedReadyAt?: string; // ISO date string
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  village?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  aggregationCenterId?: string;
+
+  @ApiPropertyOptional({ description: 'Unit of measure', default: "kg" })
+  @IsOptional()
+  @IsString()
+  quantityUnit?: string;
 }

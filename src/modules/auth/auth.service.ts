@@ -144,8 +144,8 @@ export class AuthService {
     return result;
   }
 
-  async generateTokens(userId: string, email: string, role: UserRole) {
-    const payload = { sub: userId, email, role };
+  async generateTokens(userId: string, email: string | null, role: UserRole) {
+    const payload = { sub: userId, email: email ?? '', role };
     const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
     const refreshExpiration = this.configService.get<string>('JWT_REFRESH_EXPIRATION', '30d');
 

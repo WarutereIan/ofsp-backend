@@ -4,10 +4,13 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import { join } from 'path';
+import * as express from 'express';
 import { AppModule } from './app.module';
+import { NestExpressApplication } from '@nestjs/platform-express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   
   // Get config service
   const configService = app.get(ConfigService);
@@ -18,7 +21,12 @@ async function bootstrap() {
   // Global prefix
   const apiPrefix = configService.get('API_PREFIX', 'api/v1');
   app.setGlobalPrefix(apiPrefix);
-  
+
+  // Serve uploaded images at /api/v1/uploads/*
+  const uploadDir = configService.get('UPLOAD_DESTINATION', 'uploads');
+  const uploadPath = join(process.cwd(), uploadDir);
+  app.use(`${apiPrefix}/uploads`, express.static(uploadPath));
+
   // CORS - Must be configured before other middleware
   const corsOrigins = configService.get('CORS_ORIGIN', 'http://localhost:5173,http://localhost:3000,https://ospf-frontend.vercel.app');
   const allowedOrigins = corsOrigins.split(',').map(origin => origin.trim());
@@ -79,6 +87,7 @@ async function bootstrap() {
     .addTag('Aggregation', 'Aggregation center and storage management')
     .addTag('Payments', 'Payment and escrow management')
     .addTag('Notifications', 'User notifications')
+    .addTag('Upload', 'Image and file upload')
     .addBearerAuth()
     .build();
     

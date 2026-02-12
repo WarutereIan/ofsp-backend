@@ -17,6 +17,7 @@ datasource db {
 
 enum UserRole {
   FARMER
+  LEAD_FARMER
   BUYER
   TRANSPORT_PROVIDER
   AGGREGATION_MANAGER
@@ -35,7 +36,7 @@ enum UserStatus {
 
 model User {
   id       String     @id @default(uuid())
-  email    String     @unique
+  email    String?    @unique
   phone    String     @unique
   password String // Hashed with bcrypt
   ussdPinHash String? // Hashed 4-digit USSD PIN for USSD login
@@ -85,6 +86,7 @@ model User {
   pickupSchedulesAsProvider FarmPickupSchedule[] @relation("PickupScheduleProvider")
   pickupSlotBookings        PickupSlotBooking[]  @relation("PickupSlotBookingFarmer")
   badgeProgress             BadgeProgress[]     @relation("UserBadges")
+  approvedListings          ProduceListing[]    @relation("ListingApprovedBy")
 
   @@index([email])
   @@index([phone])
@@ -268,6 +270,8 @@ model ActivityLog {
 // ============================================
 
 enum ListingStatus {
+  PENDING_LEAD_APPROVAL
+  REVISION_REQUESTED
   ACTIVE
   SOLD
   INACTIVE
@@ -329,25 +333,39 @@ model ProduceListing {
   variety           OFSPVariety
   quantity          Float // kg
   availableQuantity Float // Remaining quantity (kg)
+  quantityUnit      String   @default("kg") // Unit of measure
   pricePerKg        Float
   qualityGrade      QualityGrade
 
-  // Harvest Details
-  harvestDate DateTime
-  expiryDate  DateTime?
+  // Harvest / readiness
+  harvestDate     DateTime
+  expiryDate      DateTime?
+  expectedReadyAt DateTime? // When commodity will be ready at aggregation centre
 
   // Location
   location    String
   county      String
   subCounty   String?
+  ward        String?
+  village     String?
   coordinates String? // lat,lng
+
+  // Assigned aggregation centre (auto-linked where possible)
+  aggregationCenterId String?
+  aggregationCenter   AggregationCenter? @relation(fields: [aggregationCenterId], references: [id])
 
   // Media
   photos      String[]
   description String?
 
-  // Status
+  // Status (PENDING_LEAD_APPROVAL → APPROVED/ACTIVE or REVISION_REQUESTED)
   status ListingStatus @default(ACTIVE)
+
+  // Lead farmer approval audit
+  approvedById   String?
+  approvedBy     User?   @relation("ListingApprovedBy", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+  rejectionReason String? // Comments when returned for correction
 
   // Batch tracking
   batchId String? @unique
@@ -366,6 +384,8 @@ model ProduceListing {
   @@index([qualityGrade])
   @@index([county])
   @@index([batchId])
+  @@index([aggregationCenterId])
+  @@index([approvedById])
   // Analytics optimization indexes
   @@index([status, variety])
   @@index([variety, qualityGrade])
@@ -1260,6 +1280,7 @@ model AggregationCenter {
   wastageEntries    WastageEntry[]
   satelliteCenters  AggregationCenter[]  @relation("MainSatellite")
   assignedProfiles  Profile[]            @relation("ProfileAggregationCenter")
+  produceListings  ProduceListing[]
 
   @@index([code])
   @@index([status])

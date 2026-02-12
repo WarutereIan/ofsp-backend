@@ -17,6 +17,7 @@ import {
   CreateSupplierOfferDto,
   CreateNegotiationDto,
   SendNegotiationMessageDto,
+  RejectListingDto,
 } from './dto';
 
 @Injectable()
@@ -69,10 +70,19 @@ export class MarketplaceService {
 
   // ============ Produce Listings ============
 
-  /** Normalize listing status to Prisma ListingStatus enum (ACTIVE | SOLD | INACTIVE | EXPIRED) */
-  private normalizeListingStatus(status: string): 'ACTIVE' | 'SOLD' | 'INACTIVE' | 'EXPIRED' | null {
+  /** Normalize listing status to Prisma ListingStatus enum */
+  private normalizeListingStatus(
+    status: string,
+  ): 'PENDING_LEAD_APPROVAL' | 'REVISION_REQUESTED' | 'ACTIVE' | 'SOLD' | 'INACTIVE' | 'EXPIRED' | null {
     const s = status?.toUpperCase();
-    const valid = ['ACTIVE', 'SOLD', 'INACTIVE', 'EXPIRED'] as const;
+    const valid = [
+      'PENDING_LEAD_APPROVAL',
+      'REVISION_REQUESTED',
+      'ACTIVE',
+      'SOLD',
+      'INACTIVE',
+      'EXPIRED',
+    ] as const;
     if (valid.includes(s as any)) return s as any;
     if (s === 'PENDING') return 'EXPIRED'; // Frontend "pending" maps to backend EXPIRED
     return null;
@@ -100,7 +110,11 @@ export class MarketplaceService {
     const normalizedStatus = filters?.status ? this.normalizeListingStatus(filters.status) : null;
     if (normalizedStatus) {
       where.status = normalizedStatus;
+    } else if (!filters?.farmerId) {
+      // Buyer-facing marketplace: only show approved (ACTIVE) listings when not filtering by farmer
+      where.status = 'ACTIVE';
     }
+    // When farmerId is provided (farmer viewing own listings), no status filter = show all statuses
     if (filters?.minPrice || filters?.maxPrice) {
       where.pricePerKg = {};
       if (filters.minPrice) {
@@ -134,6 +148,8 @@ export class MarketplaceService {
             profile: true,
           },
         },
+        aggregationCenter: true,
+        approvedBy: { include: { profile: true } },
         negotiations: {
           include: {
             messages: {
@@ -152,21 +168,27 @@ export class MarketplaceService {
   }
 
   async createListing(data: CreateListingDto, farmerId: string) {
-    return this.prisma.produceListing.create({
+    const listing = await this.prisma.produceListing.create({
       data: {
         farmerId,
         variety: data.variety as any,
         quantity: data.quantity,
-        availableQuantity: data.quantity, // Initially same as quantity
+        availableQuantity: data.quantity,
+        quantityUnit: data.quantityUnit || 'kg',
         pricePerKg: data.pricePerKg,
         qualityGrade: data.qualityGrade as any,
         harvestDate: data.harvestDate ? new Date(data.harvestDate) : new Date(),
         county: data.county,
         subCounty: data.subcounty,
+        ward: data.ward,
+        village: data.village,
         location: data.location || data.county,
+        expectedReadyAt: data.expectedReadyAt ? new Date(data.expectedReadyAt) : undefined,
+        aggregationCenterId: data.aggregationCenterId || undefined,
         description: data.description,
         photos: data.photos || [],
         batchId: data.batchId,
+        status: 'PENDING_LEAD_APPROVAL', // Farmer self-post: requires lead farmer approval
       },
       include: {
         farmer: {
@@ -174,8 +196,43 @@ export class MarketplaceService {
             profile: true,
           },
         },
+        aggregationCenter: true,
       },
     });
+
+    // Notify lead farmers that a new listing awaits verification
+    await this.notifyLeadFarmersNewListing(listing);
+
+    return listing;
+  }
+
+  /** Notify lead farmers in the listing's area that a new commodity is pending approval */
+  private async notifyLeadFarmersNewListing(listing: {
+    id: string;
+    variety: string;
+    quantity: number;
+    county: string;
+    ward?: string | null;
+    village?: string | null;
+  }) {
+    const leadFarmers = await this.prisma.user.findMany({
+      where: { role: 'LEAD_FARMER', status: 'ACTIVE' },
+      select: { id: true },
+    });
+    const locationDesc = [listing.village, listing.ward, listing.county].filter(Boolean).join(', ') || listing.county;
+    for (const u of leadFarmers) {
+      await this.notificationHelperService.createNotification({
+        userId: u.id,
+        type: 'LISTING_PENDING_APPROVAL',
+        title: 'New commodity listing awaiting verification',
+        message: `${listing.variety}, ${listing.quantity} kg at ${locationDesc} is pending your approval.`,
+        priority: 'HIGH',
+        entityType: 'ProduceListing',
+        entityId: listing.id,
+        actionUrl: `/listings/pending-approval`,
+        actionLabel: 'Review',
+      });
+    }
   }
 
   async updateListing(id: string, data: UpdateListingDto, farmerId: string) {
@@ -183,6 +240,19 @@ export class MarketplaceService {
 
     if (listing.farmerId !== farmerId) {
       throw new BadRequestException('You can only update your own listings');
+    }
+
+    // Resubmit: farmer can set status to PENDING_LEAD_APPROVAL only when current is REVISION_REQUESTED
+    const normalizedStatus = data.status ? this.normalizeListingStatus(data.status) : null;
+    const isResubmit =
+      listing.status === 'REVISION_REQUESTED' && normalizedStatus === 'PENDING_LEAD_APPROVAL';
+    const statusUpdate: any = {};
+    if (isResubmit) {
+      statusUpdate.status = 'PENDING_LEAD_APPROVAL';
+      statusUpdate.rejectionReason = null;
+    } else if (normalizedStatus && normalizedStatus !== 'ACTIVE') {
+      // Allow other non-ACTIVE transitions (e.g. INACTIVE) but not self-approve
+      statusUpdate.status = normalizedStatus;
     }
 
     return this.prisma.produceListing.update({
@@ -196,10 +266,18 @@ export class MarketplaceService {
         ...(data.county && { county: data.county }),
         ...(data.subcounty && { subCounty: data.subcounty }),
         ...(data.ward && { ward: data.ward }),
+        ...(data.village !== undefined && { village: data.village }),
         ...(data.location && { location: data.location }),
         ...(data.description !== undefined && { description: data.description }),
         ...(data.photos && { photos: data.photos }),
-        ...(data.status && { status: data.status as any }),
+        ...(data.expectedReadyAt !== undefined && {
+          expectedReadyAt: data.expectedReadyAt ? new Date(data.expectedReadyAt) : null,
+        }),
+        ...(data.aggregationCenterId !== undefined && {
+          aggregationCenterId: data.aggregationCenterId || null,
+        }),
+        ...(data.quantityUnit && { quantityUnit: data.quantityUnit }),
+        ...statusUpdate,
       },
       include: {
         farmer: {
@@ -221,6 +299,97 @@ export class MarketplaceService {
     return this.prisma.produceListing.delete({
       where: { id },
     });
+  }
+
+  /** Listings pending lead farmer approval (for lead farmer queue) */
+  async getListingsPendingApproval(filters?: {
+    county?: string;
+    ward?: string;
+    aggregationCenterId?: string;
+  }) {
+    const where: any = { status: 'PENDING_LEAD_APPROVAL' };
+    if (filters?.county) where.county = filters.county;
+    if (filters?.ward) where.ward = filters.ward;
+    if (filters?.aggregationCenterId) where.aggregationCenterId = filters.aggregationCenterId;
+
+    return this.prisma.produceListing.findMany({
+      where,
+      include: {
+        farmer: { include: { profile: true } },
+        aggregationCenter: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /** Lead farmer approves a listing → status ACTIVE, visible to buyers */
+  async approveListing(listingId: string, leadFarmerId: string) {
+    const listing = await this.getListingById(listingId);
+    if (listing.status !== 'PENDING_LEAD_APPROVAL') {
+      throw new BadRequestException(
+        `Listing is not pending approval (current status: ${listing.status})`,
+      );
+    }
+    const updated = await this.prisma.produceListing.update({
+      where: { id: listingId },
+      data: {
+        status: 'ACTIVE',
+        approvedById: leadFarmerId,
+        approvedAt: new Date(),
+        rejectionReason: null,
+      },
+      include: {
+        farmer: { include: { profile: true } },
+        approvedBy: { include: { profile: true } },
+        aggregationCenter: true,
+      },
+    });
+    // Notify farmer that listing was approved
+    await this.notificationHelperService.createNotification({
+      userId: listing.farmerId,
+      type: 'LISTING_APPROVED',
+      title: 'Your commodity listing was approved',
+      message: `Your listing (${listing.variety}, ${listing.quantity} ${listing.quantityUnit || 'kg'}) is now live on the marketplace.`,
+      entityType: 'ProduceListing',
+      entityId: listingId,
+      actionUrl: `/listings/${listingId}`,
+    });
+    return updated;
+  }
+
+  /** Lead farmer rejects / returns for correction */
+  async rejectListing(listingId: string, leadFarmerId: string, dto: RejectListingDto) {
+    const listing = await this.getListingById(listingId);
+    if (listing.status !== 'PENDING_LEAD_APPROVAL') {
+      throw new BadRequestException(
+        `Listing is not pending approval (current status: ${listing.status})`,
+      );
+    }
+    const updated = await this.prisma.produceListing.update({
+      where: { id: listingId },
+      data: {
+        status: 'REVISION_REQUESTED',
+        rejectionReason: dto.reason ?? null,
+        approvedById: null,
+        approvedAt: null,
+      },
+      include: {
+        farmer: { include: { profile: true } },
+        aggregationCenter: true,
+      },
+    });
+    await this.notificationHelperService.createNotification({
+      userId: listing.farmerId,
+      type: 'LISTING_REVISION_REQUESTED',
+      title: 'Listing needs revision',
+      message: dto.reason
+        ? `Your listing was returned for correction: ${dto.reason}`
+        : 'Your listing was returned for correction. Please update and resubmit.',
+      entityType: 'ProduceListing',
+      entityId: listingId,
+      actionUrl: `/listings/${listingId}/edit`,
+    });
+    return updated;
   }
 
   // ============ Marketplace Orders ============

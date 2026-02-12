@@ -10,8 +10,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
 import { MarketplaceService } from './marketplace.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import {
   CreateListingDto,
@@ -29,6 +32,7 @@ import {
   SendNegotiationMessageDto,
   CreateRecurringOrderDto,
   UpdateRecurringOrderDto,
+  RejectListingDto,
 } from './dto';
 
 @ApiTags('Marketplace')
@@ -60,6 +64,22 @@ export class MarketplaceController {
     });
   }
 
+  @Get('listings/pending-approval')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.LEAD_FARMER, UserRole.ADMIN, UserRole.STAFF)
+  @ApiOperation({ summary: 'List listings pending lead farmer approval' })
+  async getListingsPendingApproval(
+    @Query('county') county?: string,
+    @Query('ward') ward?: string,
+    @Query('aggregationCenterId') aggregationCenterId?: string,
+  ) {
+    return this.marketplaceService.getListingsPendingApproval({
+      county,
+      ward,
+      aggregationCenterId,
+    });
+  }
+
   @Get('listings/:id')
   @ApiOperation({ summary: 'Get listing by ID' })
   async getListingById(@Param('id') id: string) {
@@ -67,7 +87,7 @@ export class MarketplaceController {
   }
 
   @Post('listings')
-  @ApiOperation({ summary: 'Create a produce listing' })
+  @ApiOperation({ summary: 'Create a produce listing (farmer self-post; pending lead farmer approval)' })
   async createListing(
     @Body() createListingDto: CreateListingDto,
     @CurrentUser() user: any,
@@ -89,6 +109,26 @@ export class MarketplaceController {
   @ApiOperation({ summary: 'Delete a listing' })
   async deleteListing(@Param('id') id: string, @CurrentUser() user: any) {
     return this.marketplaceService.deleteListing(id, user.id);
+  }
+
+  @Post('listings/:id/approve')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.LEAD_FARMER, UserRole.ADMIN, UserRole.STAFF)
+  @ApiOperation({ summary: 'Approve a listing (lead farmer)' })
+  async approveListing(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.marketplaceService.approveListing(id, user.id);
+  }
+
+  @Post('listings/:id/reject')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.LEAD_FARMER, UserRole.ADMIN, UserRole.STAFF)
+  @ApiOperation({ summary: 'Reject / return listing for correction (lead farmer)' })
+  async rejectListing(
+    @Param('id') id: string,
+    @Body() body: RejectListingDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.marketplaceService.rejectListing(id, user.id, body);
   }
 
   // ============ Marketplace Orders ============

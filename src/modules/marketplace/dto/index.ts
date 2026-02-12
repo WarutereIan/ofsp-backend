@@ -1,5 +1,6 @@
 export * from './create-listing.dto';
 export * from './update-listing.dto';
+export * from './reject-listing.dto';
 export * from './create-order.dto';
 export * from './update-order-status.dto';
 export * from './create-rfq.dto';

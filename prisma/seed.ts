@@ -91,7 +91,7 @@ const MOCK_USERS = [
 
 interface CreatedUser {
   role: UserRole;
-  email: string;
+  email: string | null;
   phone: string;
   password: string;
   name: string;

@@ -70,6 +70,14 @@ VAPID_PRIVATE_KEY=your-vapid-private-key-here
 VAPID_SUBJECT=mailto:admin@ofsp.com
 
 # ============================================
+# EMAIL NOTIFICATIONS (Resend)
+# ============================================
+# Get API key from https://resend.com/api-keys
+# FROM must be a verified domain in Resend (e.g. notifications@yourdomain.com)
+RESEND_API_KEY=re_your_api_key_here
+RESEND_FROM_EMAIL=notifications@yourdomain.com
+
+# ============================================
 # PAYMENT GATEWAY (Optional)
 # ============================================
 # M-Pesa/Safaricom
