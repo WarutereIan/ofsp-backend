@@ -78,6 +78,17 @@ const MOCK_USERS = [
     ward: 'Westlands',
   },
   {
+    role: UserRole.LEAD_FARMER,
+    email: 'kamau.lead@example.com',
+    phone: '+254789012345',
+    password: 'leadfarmer123',
+    firstName: 'Kamau',
+    lastName: 'Mwangi',
+    county: 'Machakos',
+    ward: 'Kangundo',
+    subCounty: 'Kangundo',
+  },
+  {
     role: UserRole.ADMIN,
     email: 'admin@jirani-ofsp.com',
     phone: '+254700000001',
