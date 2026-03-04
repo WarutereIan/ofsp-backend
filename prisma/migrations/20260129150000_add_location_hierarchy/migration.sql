@@ -17,7 +17,7 @@ CREATE TABLE "sub_counties" (
     "countyId" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
-    CONSTRAINT "sub_counties_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "sub_counties_pkey" PRIMARY KEY ("id")
 );
 
 CREATE UNIQUE INDEX "sub_counties_countyId_name_key" ON "sub_counties"("countyId", "name");
