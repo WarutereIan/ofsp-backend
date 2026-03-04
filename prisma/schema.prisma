@@ -166,6 +166,16 @@ model Profile {
   assignedSubCounty String?
   hasAllAccess      Boolean @default(false) // All access to all counties/subcounties
 
+  // Optional links to canonical location hierarchy (for dropdowns and analytics)
+  countyId    String?
+  countyRef   County?    @relation(fields: [countyId], references: [id])
+  subCountyId String?
+  subCountyRef SubCounty? @relation(fields: [subCountyId], references: [id])
+  wardId      String?
+  wardRef     Ward?      @relation(fields: [wardId], references: [id])
+  villageId   String?
+  villageRef  Village?   @relation(fields: [villageId], references: [id])
+
   @@index([userId])
   @@index([county])
   @@index([ward])
@@ -174,7 +184,89 @@ model Profile {
   @@index([createdAt])
   @@index([farmerGroupId])
   @@index([aggregationCenterId])
+  @@index([countyId])
+  @@index([subCountyId])
+  @@index([wardId])
+  @@index([villageId])
   @@map("profiles")
+}
+
+// ============================================
+// LOCATION HIERARCHY (County → SubCounty → Ward → Village)
+// ============================================
+
+model County {
+  id   String @id @default(uuid())
+  name String
+  slug String @unique // normalized: lowercase, hyphens, e.g. "machakos"
+  code String? @unique // e.g. "MCK" for Machakos
+
+  subCounties SubCounty[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profiles Profile[]
+  @@index([name])
+  @@map("counties")
+}
+
+model SubCounty {
+  id       String @id @default(uuid())
+  name     String
+  slug     String // normalized per county, e.g. "kangundo"
+  countyId String
+  county   County @relation(fields: [countyId], references: [id], onDelete: Cascade)
+
+  wards Ward[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profiles Profile[]
+  @@unique([countyId, name])
+  @@unique([countyId, slug])
+  @@index([countyId])
+  @@index([name])
+  @@map("sub_counties")
+}
+
+model Ward {
+  id          String    @id @default(uuid())
+  name        String
+  slug        String // normalized per sub-county, e.g. "kangundo-north"
+  subCountyId String
+  subCounty   SubCounty @relation(fields: [subCountyId], references: [id], onDelete: Cascade)
+
+  villages Village[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profiles Profile[]
+  @@unique([subCountyId, name])
+  @@unique([subCountyId, slug])
+  @@index([subCountyId])
+  @@index([name])
+  @@map("wards")
+}
+
+model Village {
+  id      String @id @default(uuid())
+  name    String
+  slug    String // normalized per ward, e.g. "masinga-central"
+  wardId  String
+  ward    Ward   @relation(fields: [wardId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profiles Profile[]
+  @@unique([wardId, name])
+  @@unique([wardId, slug])
+  @@index([wardId])
+  @@index([name])
+  @@map("villages")
 }
 
 // ============================================

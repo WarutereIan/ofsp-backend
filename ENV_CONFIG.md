@@ -53,6 +53,21 @@ MAX_FILE_SIZE=10485760
 UPLOAD_DESTINATION=./uploads
 
 # ============================================
+# S3-COMPATIBLE STORAGE (Optional - e.g. MinIO)
+# ============================================
+# When set, images are uploaded to S3 instead of local disk.
+# Works with MinIO, AWS S3, or any S3-compatible API.
+# MinIO quick start: docker run -p 9000:9000 -p 9001:9001 minio/minio server /data --console-address ":9001"
+# S3_ENDPOINT=http://localhost:9000
+# S3_BUCKET=uploads
+# S3_ACCESS_KEY=minioadmin
+# S3_SECRET_KEY=minioadmin
+# S3_REGION=us-east-1
+# S3_FORCE_PATH_STYLE=true
+# Public URL for stored objects (required for correct img src). Use MinIO console or nginx to make bucket public.
+# S3_PUBLIC_URL=http://localhost:9000/uploads
+
+# ============================================
 # SMS/NOTIFICATIONS (Optional)
 # ============================================
 SMS_API_KEY=

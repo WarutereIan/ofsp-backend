@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../notification/email.service';
 import * as bcrypt from 'bcrypt';
 import { Prisma, UserRole, UserStatus } from '@prisma/client';
+import { slugify } from '../../common/utils/slug.util';
 import { isValidSubCounty } from '../../common/constants/locations';
 
 @Injectable()
@@ -110,6 +111,11 @@ export class UsersService {
       county?: string;
       subcounty?: string;
       ward?: string;
+      village?: string;
+      countyId?: string;
+      subCountyId?: string;
+      wardId?: string;
+      villageId?: string;
       farmerGroupId?: string;
       aggregationCenterId?: string;
       assignedCounty?: string;
@@ -172,6 +178,11 @@ export class UsersService {
             county: data.profile.county,
             subCounty: data.profile.subcounty,
             ward: data.profile.ward,
+            village: data.profile.village,
+            countyId: data.profile.countyId,
+            subCountyId: data.profile.subCountyId,
+            wardId: data.profile.wardId,
+            villageId: data.profile.villageId,
             farmerGroupId: data.profile.farmerGroupId,
             aggregationCenterId: data.profile.aggregationCenterId,
             assignedCounty: data.profile.assignedCounty,
@@ -500,8 +511,117 @@ export class UsersService {
   }
 
   /**
+   * Resolve location column values to hierarchy IDs by matching normalized slugs.
+   * Order: county -> subcounty (within county) -> ward (within subcounty) -> village (within ward).
+   * If a level is provided but not found, throws with a clear message.
+   */
+  private async resolveLocationFromSlugs(
+    countyStr?: string,
+    subcountyStr?: string,
+    wardStr?: string,
+    villageStr?: string,
+  ): Promise<{
+    countyId?: string;
+    subCountyId?: string;
+    wardId?: string;
+    villageId?: string;
+    county?: string;
+    subCounty?: string;
+    ward?: string;
+    village?: string;
+  }> {
+    if (!countyStr && !subcountyStr && !wardStr && !villageStr) {
+      return {};
+    }
+    let countyId: string | undefined;
+    let subCountyId: string | undefined;
+    let wardId: string | undefined;
+    let villageId: string | undefined;
+    let countyName: string | undefined;
+    let subCountyName: string | undefined;
+    let wardName: string | undefined;
+    let villageName: string | undefined;
+
+    if (countyStr) {
+      const slug = slugify(countyStr);
+      const county = await this.prisma.county.findFirst({ where: { slug } });
+      if (!county) {
+        throw new BadRequestException(`County not found: "${countyStr}" (normalized: ${slug}). Add the county in Locations first.`);
+      }
+      countyId = county.id;
+      countyName = county.name;
+    }
+
+    if (subcountyStr) {
+      if (!countyId) {
+        throw new BadRequestException('Subcounty provided without county. Include county column or provide county first.');
+      }
+      const slug = slugify(subcountyStr);
+      const sub = await this.prisma.subCounty.findFirst({
+        where: { countyId, slug },
+        include: { county: true },
+      });
+      if (!sub) {
+        throw new BadRequestException(
+          `Subcounty not found: "${subcountyStr}" (normalized: ${slug}) in this county. Add it in Locations first.`,
+        );
+      }
+      subCountyId = sub.id;
+      subCountyName = sub.name;
+    }
+
+    if (wardStr) {
+      if (!subCountyId) {
+        throw new BadRequestException('Ward provided without subcounty. Include county and subcounty columns.');
+      }
+      const slug = slugify(wardStr);
+      const w = await this.prisma.ward.findFirst({
+        where: { subCountyId, slug },
+        include: { subCounty: true },
+      });
+      if (!w) {
+        throw new BadRequestException(
+          `Ward not found: "${wardStr}" (normalized: ${slug}) in this subcounty. Add it in Locations first.`,
+        );
+      }
+      wardId = w.id;
+      wardName = w.name;
+    }
+
+    if (villageStr) {
+      if (!wardId) {
+        throw new BadRequestException('Village provided without ward. Include county, subcounty and ward columns.');
+      }
+      const slug = slugify(villageStr);
+      const v = await this.prisma.village.findFirst({
+        where: { wardId, slug },
+        include: { ward: true },
+      });
+      if (!v) {
+        throw new BadRequestException(
+          `Village not found: "${villageStr}" (normalized: ${slug}) in this ward. Add it in Locations first.`,
+        );
+      }
+      villageId = v.id;
+      villageName = v.name;
+    }
+
+    return {
+      countyId,
+      subCountyId,
+      wardId,
+      villageId,
+      county: countyName,
+      subCounty: subCountyName,
+      ward: wardName,
+      village: villageName,
+    };
+  }
+
+  /**
    * Bulk create farmer users from CSV buffer.
-   * Expected columns: name, phone, password (optional), email (optional), farmer_group_code (optional), county, subcounty, ward (all optional except name, phone).
+   * Expected columns: name, phone, password (optional), email (optional), farmer_group_code (optional),
+   * county, subcounty, ward, village (optional). Location columns are normalized to slugs and matched to the location hierarchy for assignment.
    */
   async bulkCreateFarmers(csvBuffer: Buffer): Promise<{
     created: number;
@@ -523,9 +643,10 @@ export class UsersService {
       const passwordRaw = (row.password ?? row.pwd ?? '').trim();
       const emailRaw = (row.email ?? '').trim();
       const farmerGroupCode = (row.farmer_group_code ?? row.farmer_group ?? row.group_code ?? '').trim();
-      const county = (row.county ?? '').trim();
-      const subcounty = (row.subcounty ?? row.sub_county ?? '').trim();
-      const ward = (row.ward ?? '').trim();
+      const countyStr = (row.county ?? '').trim();
+      const subcountyStr = (row.subcounty ?? row.sub_county ?? '').trim();
+      const wardStr = (row.ward ?? '').trim();
+      const villageStr = (row.village ?? '').trim();
 
       if (!name) {
         errors.push({ row: rowNum, message: 'Name is required' });
@@ -560,12 +681,23 @@ export class UsersService {
         farmerGroupId = group.id;
       }
 
-      if (subcounty && !isValidSubCounty(subcounty)) {
-        errors.push({
-          row: rowNum,
-          message: `Invalid subcounty: ${subcounty}. Valid: Kangundo, Kathiani, Masinga, Yatta`,
-        });
-        continue;
+      let locationIds: {
+        countyId?: string;
+        subCountyId?: string;
+        wardId?: string;
+        villageId?: string;
+        county?: string;
+        subCounty?: string;
+        ward?: string;
+        village?: string;
+      } = {};
+      if (countyStr || subcountyStr || wardStr || villageStr) {
+        try {
+          locationIds = await this.resolveLocationFromSlugs(countyStr || undefined, subcountyStr || undefined, wardStr || undefined, villageStr || undefined);
+        } catch (err: any) {
+          errors.push({ row: rowNum, message: err?.message ?? 'Location resolution failed' });
+          continue;
+        }
       }
 
       try {
@@ -577,9 +709,14 @@ export class UsersService {
           profile: {
             firstName,
             lastName,
-            county: county || undefined,
-            subcounty: subcounty || undefined,
-            ward: ward || undefined,
+            county: locationIds.county,
+            subcounty: locationIds.subCounty,
+            ward: locationIds.ward,
+            village: locationIds.village,
+            countyId: locationIds.countyId,
+            subCountyId: locationIds.subCountyId,
+            wardId: locationIds.wardId,
+            villageId: locationIds.villageId,
             farmerGroupId,
           },
         });

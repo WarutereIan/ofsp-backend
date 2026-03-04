@@ -21,7 +21,9 @@ import { BadgeModule } from './modules/badge/badge.module';
 import { UssdModule } from './modules/ussd/ussd.module';
 import { StaffModule } from './modules/staff/staff.module';
 import { FarmerGroupsModule } from './modules/farmer-groups/farmer-groups.module';
+import { LocationsModule } from './modules/locations/locations.module';
 import { UploadModule } from './modules/upload/upload.module';
+import { TraceabilityModule } from './modules/traceability/traceability.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -67,7 +69,9 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
     UssdModule,
     StaffModule,
     FarmerGroupsModule,
+    LocationsModule,
     UploadModule,
+    TraceabilityModule,
   ],
   controllers: [AppController],
   providers: [

@@ -41,12 +41,28 @@ export class AuthController {
     private configService: ConfigService,
   ) {}
 
+  /** Parse a duration string like "7d", "24h", "30m", "60s" to milliseconds. */
+  private parseDurationToMs(duration: string): number {
+    const match = duration.match(/^(\d+)(s|m|h|d)$/);
+    if (!match) return 7 * 24 * 60 * 60 * 1000; // default 7 days
+    const value = parseInt(match[1], 10);
+    switch (match[2]) {
+      case 's': return value * 1000;
+      case 'm': return value * 60 * 1000;
+      case 'h': return value * 60 * 60 * 1000;
+      case 'd': return value * 24 * 60 * 60 * 1000;
+      default:  return 7 * 24 * 60 * 60 * 1000;
+    }
+  }
+
   /**
    * Set auth cookies on the response
    */
   private setAuthCookies(res: express.Response, accessToken: string, refreshToken: string): void {
-    // Access token: short-lived (matches JWT_EXPIRATION, default 7d but should be shorter)
-    const accessMaxAge = 15 * 60 * 1000; // 15 minutes
+    // Access token cookie maxAge should match the JWT expiration so the
+    // cookie survives as long as the token is valid (avoids unnecessary 401 → refresh cycles).
+    const jwtExpiration = this.configService.get<string>('JWT_EXPIRATION', '7d');
+    const accessMaxAge = this.parseDurationToMs(jwtExpiration);
     res.cookie('access_token', accessToken, {
       ...COOKIE_OPTIONS,
       maxAge: accessMaxAge,
