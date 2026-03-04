@@ -2,6 +2,7 @@ import { Injectable, Optional } from '@nestjs/common';
 import { PrismaService } from '../../modules/prisma/prisma.service';
 import { WebPushService, PushNotificationPayload } from '../../modules/notification/web-push.service';
 import { EmailService } from '../../modules/notification/email.service';
+import { SmsService } from '../../modules/notification/sms.service';
 
 export type NotificationChannel = 'web-push' | 'email' | 'sms' | 'in-app';
 
@@ -26,11 +27,12 @@ export class NotificationHelperService {
     private prisma: PrismaService,
     @Optional() private webPushService?: WebPushService,
     @Optional() private emailService?: EmailService,
+    @Optional() private smsService?: SmsService,
   ) {}
 
   async createNotification(data: CreateNotificationDto) {
-    // Determine channels - default to web-push if not specified
-    const channels = data.channels || ['web-push'];
+    // Default channels: web-push and sms for all notifications (in-app is always created)
+    const channels = data.channels ?? ['web-push', 'sms'];
 
     // Create notification record in database
     const notification = await this.prisma.notification.create({
@@ -52,8 +54,8 @@ export class NotificationHelperService {
       },
     });
 
-    // Send through specified channels
-    await this.sendThroughChannels(data, channels);
+    // Send through specified channels (pass notification so SMS can register for DLR)
+    await this.sendThroughChannels(data, channels, notification);
 
     return notification;
   }
@@ -64,6 +66,7 @@ export class NotificationHelperService {
   private async sendThroughChannels(
     data: CreateNotificationDto,
     channels: NotificationChannel[],
+    notification: { id: string },
   ) {
     const promises: Promise<any>[] = [];
 
@@ -128,8 +131,37 @@ export class NotificationHelperService {
           break;
 
         case 'sms':
-          // TODO: Implement SMS channel
-          console.log(`SMS channel not yet implemented for notification to user ${data.userId}`);
+          if (this.smsService) {
+            const smsMessage = [data.title, data.message].filter(Boolean).join(': ') || data.message;
+            promises.push(
+              this.smsService
+                .sendNotificationToUser(data.userId, { message: smsMessage })
+                .then(async (result) => {
+                  if (!result.success && result.error) {
+                    console.error(`Failed to send SMS to user ${data.userId}:`, result.error);
+                    return;
+                  }
+                  // Register for Africa's Talking delivery report (DLR) callback
+                  if (result.messageId && result.phone) {
+                    try {
+                      await this.prisma.smsDeliveryReport.create({
+                        data: {
+                          notificationId: notification.id,
+                          providerMessageId: result.messageId,
+                          phoneNumber: result.phone,
+                          status: 'Sent',
+                        },
+                      });
+                    } catch (err) {
+                      console.error(`Failed to create SmsDeliveryReport for notification ${notification.id}:`, err);
+                    }
+                  }
+                })
+                .catch((error) => {
+                  console.error(`Failed to send SMS notification to user ${data.userId}:`, error);
+                }),
+            );
+          }
           break;
 
         case 'in-app':

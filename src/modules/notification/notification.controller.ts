@@ -137,4 +137,15 @@ export class NotificationController {
   async getSubscriptions(@CurrentUser() user: any) {
     return this.webPushService.getUserSubscriptions(user.id);
   }
+
+  // ============ Africa's Talking SMS Delivery Report (DLR) Callback ============
+  // Configure this URL in Africa's Talking dashboard: https://account.africastalking.com
+  // See: https://developers.africastalking.com/docs/sms/notifications
+
+  @Public()
+  @Post('sms-delivery-callback')
+  @ApiOperation({ summary: 'Africa\'s Talking SMS delivery report webhook (DLR)' })
+  async smsDeliveryCallback(@Body() body: any) {
+    return this.notificationService.handleSmsDeliveryReport(body);
+  }
 }

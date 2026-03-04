@@ -14,7 +14,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { AnalyticsFiltersDto, LeaderboardFiltersDto, TimeRange, TimePeriod, EntityType, GenerateReportDto } from './dto';
+import { AnalyticsFiltersDto, LeaderboardFiltersDto, TimeRange, TimePeriod, EntityType, GenerateReportDto, CreateAdvisoryDto } from './dto';
 import { LeaderboardMetric, LeaderboardPeriod } from './dto/leaderboard-filters.dto';
 
 @ApiTags('Analytics')
@@ -253,5 +253,38 @@ export class AnalyticsController {
     @CurrentUser() user: any,
   ) {
     return this.analyticsService.generateReport(dto.templateId, dto.parameters || {}, user);
+  }
+
+  // ============ Advisories ============
+
+  @Get('advisories')
+  @ApiOperation({ summary: 'List advisories' })
+  @ApiQuery({ name: 'isActive', type: Boolean, required: false })
+  @ApiQuery({ name: 'limit', type: Number, required: false })
+  async getAdvisories(
+    @Query('isActive') isActive?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const filters: { isActive?: boolean; limit?: number } = {};
+    if (isActive !== undefined && isActive !== '') filters.isActive = isActive === 'true';
+    if (limit !== undefined && limit !== '') filters.limit = parseInt(limit, 10);
+    return this.analyticsService.getAdvisories(filters);
+  }
+
+  @Get('advisories/:id')
+  @ApiOperation({ summary: 'Get advisory by id' })
+  async getAdvisoryById(@Param('id') id: string) {
+    return this.analyticsService.getAdvisoryById(id);
+  }
+
+  @Post('advisories')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.STAFF, UserRole.EXTENSION_OFFICER)
+  @ApiOperation({ summary: 'Create and send advisory to farmers (SMS + web-push)' })
+  async createAdvisory(
+    @Body() dto: CreateAdvisoryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.analyticsService.createAndSendAdvisory(dto, user.userId ?? user.id);
   }
 }

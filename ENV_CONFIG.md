@@ -68,11 +68,24 @@ UPLOAD_DESTINATION=./uploads
 # S3_PUBLIC_URL=http://localhost:9000/uploads
 
 # ============================================
-# SMS/NOTIFICATIONS (Optional)
+# SMS NOTIFICATIONS (Africa's Talking)
 # ============================================
-SMS_API_KEY=
-SMS_API_URL=
-SMS_SENDER_ID=JIRANI-OFSP
+# Used for outbound bulk SMS only (e.g. order/transport notifications).
+# USSD does NOT use this key: USSD is inbound (Africa's Talking POSTs to our /ussd/africastalking callback).
+# Get credentials from https://account.africastalking.com (API Key, Username).
+# Sandbox: use username "sandbox" and sandbox API key for testing.
+# Production: use your app username and live API key.
+# Sender ID: alphanumeric (e.g. OFSP) or short code; required for some routes.
+AFRICAS_TALKING_API_KEY=
+AFRICAS_TALKING_USERNAME=sandbox
+AFRICAS_TALKING_SENDER_ID=OFSP
+# Set to "false" to use live API; default is sandbox when not set.
+# AFRICAS_TALKING_SANDBOX=false
+#
+# Delivery reports (DLR): Configure a callback URL in Africa's Talking dashboard to receive
+# delivery status (e.g. Delivered, Failed). Use this exact path (must be publicly reachable):
+#   https://<your-domain>/api/v1/notifications/sms-delivery-callback
+# See: https://developers.africastalking.com/docs/sms/notifications
 
 # ============================================
 # WEB PUSH NOTIFICATIONS (VAPID Keys)

@@ -285,6 +285,7 @@ model Notification {
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  smsDeliveryReports SmsDeliveryReport[]
 
   type     String // ORDER_PLACED, PAYMENT_RECEIVED, etc.
   title    String
@@ -311,6 +312,25 @@ model Notification {
   @@index([type])
   @@index([entityType, entityId])
   @@map("notifications")
+}
+
+/// Links an outbound SMS to a notification for Africa's Talking delivery report (DLR) callbacks.
+/// When we send SMS we create a row with providerMessageId from AT response; when DLR callback
+/// is received we update status and optionally bump advisory smsDeliveredCount.
+model SmsDeliveryReport {
+  id                String   @id @default(uuid())
+  notificationId    String
+  notification      Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  providerMessageId String   @unique // Africa's Talking messageId from send response
+  phoneNumber       String
+  status            String   // Sent | Delivered | Failed | Rejected | etc.
+  rawPayload        Json?    // DLR callback payload for debugging
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([providerMessageId])
+  @@index([notificationId])
+  @@map("sms_delivery_reports")
 }
 
 model PushSubscription {
@@ -1919,8 +1939,9 @@ model Advisory {
 
   status        String? // "draft" | "sent" | "delivered" | "failed"
   sentDate      DateTime?
-  deliveryCount Int?      @default(0)
-  readCount     Int?      @default(0)
+  deliveryCount    Int?      @default(0)  // Number of notifications sent (no error)
+  smsDeliveredCount Int?     @default(0)  // DLR-confirmed SMS deliveries from Africa's Talking
+  readCount        Int?      @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

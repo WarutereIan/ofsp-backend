@@ -3,6 +3,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AnalyticsCacheService, ANALYTICS_CACHE_TTL } from './analytics-cache.service';
 import { AnalyticsFiltersDto, TimeRange, TimePeriod, EntityType } from './dto';
 import { LeaderboardFiltersDto, LeaderboardMetric, LeaderboardPeriod } from './dto/leaderboard-filters.dto';
+import { NotificationHelperService } from '../../common/services/notification.service';
+import { CreateAdvisoryDto } from './dto/create-advisory.dto';
+import { AdvisoryType, UserRole } from '@prisma/client';
 
 @Injectable()
 export class AnalyticsService {
@@ -11,6 +14,7 @@ export class AnalyticsService {
   constructor(
     private prisma: PrismaService,
     private cacheService: AnalyticsCacheService,
+    private notificationHelper: NotificationHelperService,
   ) {}
 
   // ============ Helper Methods ============
@@ -3705,5 +3709,184 @@ export class AnalyticsService {
     });
     if (!row) return null;
     return row.payload as any;
+  }
+
+  // ============ Advisories ============
+
+  /**
+   * List advisories with optional filters.
+   */
+  async getAdvisories(filters?: { isActive?: boolean; limit?: number }) {
+    const limit = Math.min(filters?.limit ?? 100, 200);
+    return this.prisma.advisory.findMany({
+      where: filters?.isActive != null ? { isActive: filters.isActive } : undefined,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: {
+        creator: {
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            profile: {
+              select: { firstName: true, lastName: true },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * Get one advisory by id.
+   */
+  async getAdvisoryById(id: string) {
+    return this.prisma.advisory.findUnique({
+      where: { id },
+      include: {
+        creator: {
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            profile: {
+              select: { firstName: true, lastName: true },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * Resolve farmer user IDs based on target audience and optional target value.
+   */
+  private async resolveAdvisoryRecipients(
+    targetAudience: string,
+    targetValue?: string,
+  ): Promise<string[]> {
+    const farmerRoles: UserRole[] = [UserRole.FARMER, UserRole.LEAD_FARMER];
+
+    if (targetAudience === 'all') {
+      const users = await this.prisma.user.findMany({
+        where: { role: { in: farmerRoles }, status: 'ACTIVE' },
+        select: { id: true },
+      });
+      return users.map((u) => u.id);
+    }
+
+    if (targetAudience === 'individual' && targetValue?.trim()) {
+      const byId = await this.prisma.user.findUnique({
+        where: { id: targetValue.trim(), role: { in: farmerRoles } },
+        select: { id: true },
+      });
+      if (byId) return [byId.id];
+      const byPhone = await this.prisma.user.findFirst({
+        where: { phone: { contains: targetValue.replace(/\D/g, '') }, role: { in: farmerRoles } },
+        select: { id: true },
+      });
+      return byPhone ? [byPhone.id] : [];
+    }
+
+    if (targetAudience === 'sub_county' && targetValue?.trim()) {
+      const value = targetValue.trim();
+      const users = await this.prisma.user.findMany({
+        where: {
+          role: { in: farmerRoles },
+          status: 'ACTIVE',
+          profile: {
+            subCounty: { equals: value, mode: 'insensitive' },
+          },
+        },
+        select: { id: true },
+      });
+      return users.map((u) => u.id);
+    }
+
+    if (targetAudience === 'farmer_group' && targetValue?.trim()) {
+      const value = targetValue.trim();
+      const groupMatch = await this.prisma.farmerGroup.findFirst({
+        where: {
+          OR: [
+            { id: value },
+            { name: { equals: value, mode: 'insensitive' } },
+            { code: value },
+          ],
+        },
+        select: { id: true },
+      });
+      if (!groupMatch) return [];
+      const users = await this.prisma.user.findMany({
+        where: {
+          role: { in: farmerRoles },
+          status: 'ACTIVE',
+          profile: { farmerGroupId: groupMatch.id },
+        },
+        select: { id: true },
+      });
+      return users.map((u) => u.id);
+    }
+
+    return [];
+  }
+
+  /**
+   * Create advisory and send to all resolved farmers via SMS and web-push.
+   */
+  async createAndSendAdvisory(dto: CreateAdvisoryDto, createdByUserId: string) {
+    const type = (dto.type && ['QUALITY', 'PRICING', 'STORAGE', 'HARVESTING', 'MARKETING', 'GENERAL'].includes(dto.type))
+      ? (dto.type as AdvisoryType)
+      : AdvisoryType.GENERAL;
+
+    const advisory = await this.prisma.advisory.create({
+      data: {
+        createdBy: createdByUserId,
+        type,
+        title: dto.title,
+        content: dto.content,
+        category: dto.category ?? null,
+        priority: dto.priority ?? null,
+        targetAudience: [dto.targetAudience],
+        targetValue: dto.targetValue ?? null,
+        attachments: [],
+        isActive: true,
+        status: 'sent',
+        sentDate: new Date(),
+        deliveryCount: 0,
+        readCount: 0,
+      },
+    });
+
+    const recipientIds = await this.resolveAdvisoryRecipients(dto.targetAudience, dto.targetValue);
+
+    let delivered = 0;
+    for (const userId of recipientIds) {
+      try {
+        await this.notificationHelper.createNotification({
+          userId,
+          type: 'ADVISORY',
+          title: dto.title,
+          message: dto.content,
+          priority: dto.priority === 'high' ? 'HIGH' : dto.priority === 'low' ? 'LOW' : 'MEDIUM',
+          entityType: 'ADVISORY',
+          entityId: advisory.id,
+          actionUrl: `/dashboard/farmer?advisory=${advisory.id}`,
+          actionLabel: 'View',
+          metadata: { advisoryId: advisory.id },
+          channels: ['web-push', 'sms'],
+        });
+        delivered++;
+      } catch (err) {
+        this.logger.warn(`Advisory notification failed for user ${userId}:`, (err as Error)?.message);
+      }
+    }
+
+    await this.prisma.advisory.update({
+      where: { id: advisory.id },
+      data: { deliveryCount: delivered },
+    });
+
+    this.logger.log(`Advisory ${advisory.id} sent to ${delivered}/${recipientIds.length} farmers`);
+    return { ...advisory, deliveryCount: delivered };
   }
 }
