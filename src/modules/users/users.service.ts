@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../notification/email.service';
+import { SmsService } from '../notification/sms.service';
 import * as bcrypt from 'bcrypt';
 import { Prisma, UserRole, UserStatus } from '@prisma/client';
-import { slugify } from '../../common/utils/slug.util';
+import { slugify, normalizeLocationName } from '../../common/utils/slug.util';
 import { isValidSubCounty } from '../../common/constants/locations';
 
 @Injectable()
@@ -11,6 +12,7 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     @Optional() private emailService?: EmailService,
+    @Optional() private smsService?: SmsService,
   ) {}
 
   async findById(id: string) {
@@ -108,6 +110,7 @@ export class UsersService {
     profile: {
       firstName: string;
       lastName: string;
+      gender?: string;
       county?: string;
       subcounty?: string;
       ward?: string;
@@ -175,6 +178,7 @@ export class UsersService {
           create: {
             firstName: data.profile.firstName,
             lastName: data.profile.lastName,
+            ...(data.profile.gender != null && data.profile.gender !== '' && { gender: data.profile.gender }),
             county: data.profile.county,
             subCounty: data.profile.subcounty,
             ward: data.profile.ward,
@@ -209,12 +213,24 @@ export class UsersService {
       await this.updateFarmerGroupMemberCount(data.profile.farmerGroupId);
     }
 
+    const displayName =
+      [data.profile.firstName, data.profile.lastName].filter(Boolean).join(' ') || 'User';
+    const roleLabel = data.role.replace(/_/g, ' ').toLowerCase();
+
+    // Send assigned password via SMS when user has phone (so they receive it on mobile)
+    if (data.phone?.trim() && this.smsService) {
+      const smsMessage =
+        `Your account has been created (${roleLabel}). Your password is: ${data.password}. Please sign in and change it after first login.`;
+      this.smsService
+        .sendNotificationToUser(user.id, { message: smsMessage })
+        .catch((err) =>
+          console.error(`Failed to send welcome SMS to user ${user.id}:`, err?.message ?? err),
+        );
+    }
+
     // Send welcome email with assigned password if user has an email
     const recipientEmail = (email || '').trim();
     if (recipientEmail && this.emailService) {
-      const displayName =
-        [data.profile.firstName, data.profile.lastName].filter(Boolean).join(' ') || 'User';
-      const roleLabel = data.role.replace(/_/g, ' ').toLowerCase();
       const subject = 'Your account has been created – welcome';
       const html = this.buildWelcomeEmailHtml(displayName, roleLabel, data.password);
       this.emailService
@@ -470,8 +486,10 @@ export class UsersService {
    * Handles quoted fields and \r\n.
    */
   private parseCsvToRows(buffer: Buffer): Record<string, string>[] {
-    const text = buffer.toString('utf-8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const lines = text.split('\n').filter((line) => line.trim());
+    let text = buffer.toString('utf-8');
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // strip UTF-8 BOM
+    text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
     if (lines.length < 2) return [];
 
     const parseLine = (line: string): string[] => {
@@ -543,7 +561,7 @@ export class UsersService {
     let villageName: string | undefined;
 
     if (countyStr) {
-      const slug = slugify(countyStr);
+      const slug = slugify(normalizeLocationName(countyStr) || countyStr.trim());
       const county = await this.prisma.county.findFirst({ where: { slug } });
       if (!county) {
         throw new BadRequestException(`County not found: "${countyStr}" (normalized: ${slug}). Add the county in Locations first.`);
@@ -556,7 +574,7 @@ export class UsersService {
       if (!countyId) {
         throw new BadRequestException('Subcounty provided without county. Include county column or provide county first.');
       }
-      const slug = slugify(subcountyStr);
+      const slug = slugify(normalizeLocationName(subcountyStr) || subcountyStr.trim());
       const sub = await this.prisma.subCounty.findFirst({
         where: { countyId, slug },
         include: { county: true },
@@ -574,7 +592,7 @@ export class UsersService {
       if (!subCountyId) {
         throw new BadRequestException('Ward provided without subcounty. Include county and subcounty columns.');
       }
-      const slug = slugify(wardStr);
+      const slug = slugify(normalizeLocationName(wardStr) || wardStr.trim());
       const w = await this.prisma.ward.findFirst({
         where: { subCountyId, slug },
         include: { subCounty: true },
@@ -592,7 +610,7 @@ export class UsersService {
       if (!wardId) {
         throw new BadRequestException('Village provided without ward. Include county, subcounty and ward columns.');
       }
-      const slug = slugify(villageStr);
+      const slug = slugify(normalizeLocationName(villageStr) || villageStr.trim());
       const v = await this.prisma.village.findFirst({
         where: { wardId, slug },
         include: { ward: true },
@@ -632,13 +650,28 @@ export class UsersService {
     const errors: { row: number; message: string }[] = [];
     let created = 0;
 
+    if (rows.length === 0) {
+      return {
+        created: 0,
+        failed: 1,
+        errors: [
+          {
+            row: 0,
+            message:
+              'No data rows found. Ensure the CSV has a header row and at least one data row. Save the file with line breaks (e.g. from a text editor or "Save as CSV" in Excel).',
+          },
+        ],
+      };
+    }
+
     const normalizePhone = (p: string) => p.replace(/\s+/g, '').trim();
-    const sanitizeForEmail = (s: string) => s.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const rowNum = i + 2; // 1-based + header
       const name = (row.name ?? row.full_name ?? '').trim();
+      const firstNameCol = (row.first_name ?? row.firstname ?? '').trim();
+      const lastNameCol = (row.last_name ?? row.lastname ?? '').trim();
       const phone = normalizePhone(row.phone ?? row.phone_number ?? '');
       const passwordRaw = (row.password ?? row.pwd ?? '').trim();
       const emailRaw = (row.email ?? '').trim();
@@ -647,9 +680,13 @@ export class UsersService {
       const subcountyStr = (row.subcounty ?? row.sub_county ?? '').trim();
       const wardStr = (row.ward ?? '').trim();
       const villageStr = (row.village ?? '').trim();
+      const genderRaw = (row.gender ?? row.sex ?? '').trim().toLowerCase();
+      const gender = genderRaw === 'm' || genderRaw === 'male' ? 'Male' : genderRaw === 'f' || genderRaw === 'female' ? 'Female' : genderRaw ? genderRaw.charAt(0).toUpperCase() + genderRaw.slice(1) : undefined;
 
-      if (!name) {
-        errors.push({ row: rowNum, message: 'Name is required' });
+      const hasName = !!name;
+      const hasFirstOrLastName = !!(firstNameCol || lastNameCol);
+      if (!hasName && !hasFirstOrLastName) {
+        errors.push({ row: rowNum, message: 'Name or first_name and/or last_name is required' });
         continue;
       }
       if (!phone) {
@@ -657,10 +694,18 @@ export class UsersService {
         continue;
       }
 
-      const nameParts = name.split(/\s+/).filter(Boolean);
-      const firstName = nameParts[0] ?? '';
-      const lastName = nameParts.slice(1).join(' ') ?? '';
-      const email = emailRaw || `${sanitizeForEmail(phone)}-${rowNum}@farmer.bulk`;
+      let firstName: string;
+      let lastName: string;
+      if (firstNameCol || lastNameCol) {
+        firstName = firstNameCol;
+        lastName = lastNameCol;
+      } else {
+        const nameParts = name.split(/\s+/).filter(Boolean);
+        firstName = nameParts[0] ?? '';
+        lastName = nameParts.slice(1).join(' ') ?? '';
+      }
+      // No default email: leave null when row has no email to avoid sending to fake addresses
+      const email = emailRaw || null;
 
       if (passwordRaw && passwordRaw.length < 8) {
         errors.push({ row: rowNum, message: 'Password must be at least 8 characters when provided' });
@@ -702,13 +747,14 @@ export class UsersService {
 
       try {
         await this.createUser({
-          email,
+          ...(email && { email }),
           phone,
           password,
           role: UserRole.FARMER,
           profile: {
             firstName,
             lastName,
+            ...(gender && { gender }),
             county: locationIds.county,
             subcounty: locationIds.subCounty,
             ward: locationIds.ward,

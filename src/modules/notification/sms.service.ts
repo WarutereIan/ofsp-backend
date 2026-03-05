@@ -23,6 +23,13 @@ export interface SmsNotificationPayload {
   message: string;
 }
 
+/**
+ * Legacy Send Bulk SMS API (supports sandbox).
+ * Live:   https://api.africastalking.com/version1/messaging
+ * Sandbox: https://api.sandbox.africastalking.com/version1/messaging
+ * POST, Content-Type: application/x-www-form-urlencoded
+ * Body: username (required), to (comma-separated), message (required), from (optional), bulkSMSMode (optional, 1 = sender charged)
+ */
 const AFRICAS_TALKING_BULK_PATH = '/version1/messaging';
 const DEFAULT_LIVE_BASE = 'https://api.africastalking.com';
 const SANDBOX_BASE = 'https://api.sandbox.africastalking.com';
@@ -142,23 +149,23 @@ export class SmsService implements OnModuleInit {
     }
 
     const url = `${this.baseUrl}${AFRICAS_TALKING_BULK_PATH}`;
-    // Africa's Talking Bulk SMS: username, phoneNumbers (array), message, senderId (alphanumeric)
-    const body = {
-      username: this.username,
-      phoneNumbers: normalized,
-      message: message.trim(),
-      senderId: this.senderId,
-    };
+    // Legacy bulk SMS: form-urlencoded (username, to, message, from); bulkSMSMode=1 = sender gets charged
+    const form = new URLSearchParams();
+    form.set('username', this.username);
+    form.set('to', normalized.join(','));
+    form.set('message', message.trim());
+    form.set('from', this.senderId);
+    form.set('bulkSMSMode', '1');
 
     try {
       const res = await fetch(url, {
         method: 'POST',
         headers: {
           Accept: 'application/json',
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
           apiKey: this.apiKey,
         },
-        body: JSON.stringify(body),
+        body: form.toString(),
       });
 
       const text = await res.text();

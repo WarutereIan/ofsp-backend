@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { slugify } from '../../common/utils/slug.util';
+import { slugify, normalizeLocationName } from '../../common/utils/slug.util';
 import type {
   CreateCountyDto,
   UpdateCountyDto,
@@ -16,63 +16,18 @@ import type {
 export class LocationsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private async ensureUniqueCountySlug(baseSlug: string, excludeId?: string): Promise<string> {
-    let slug = baseSlug || 'county';
-    let n = 0;
-    while (true) {
-      const existing = await this.prisma.county.findFirst({
-        where: { slug, ...(excludeId ? { id: { not: excludeId } } : {}) },
-      });
-      if (!existing) return slug;
-      slug = `${baseSlug}-${++n}`;
-    }
-  }
-
-  private async ensureUniqueSubCountySlug(countyId: string, baseSlug: string, excludeId?: string): Promise<string> {
-    let slug = baseSlug || 'subcounty';
-    let n = 0;
-    while (true) {
-      const existing = await this.prisma.subCounty.findFirst({
-        where: { countyId, slug, ...(excludeId ? { id: { not: excludeId } } : {}) },
-      });
-      if (!existing) return slug;
-      slug = `${baseSlug}-${++n}`;
-    }
-  }
-
-  private async ensureUniqueWardSlug(subCountyId: string, baseSlug: string, excludeId?: string): Promise<string> {
-    let slug = baseSlug || 'ward';
-    let n = 0;
-    while (true) {
-      const existing = await this.prisma.ward.findFirst({
-        where: { subCountyId, slug, ...(excludeId ? { id: { not: excludeId } } : {}) },
-      });
-      if (!existing) return slug;
-      slug = `${baseSlug}-${++n}`;
-    }
-  }
-
-  private async ensureUniqueVillageSlug(wardId: string, baseSlug: string, excludeId?: string): Promise<string> {
-    let slug = baseSlug || 'village';
-    let n = 0;
-    while (true) {
-      const existing = await this.prisma.village.findFirst({
-        where: { wardId, slug, ...(excludeId ? { id: { not: excludeId } } : {}) },
-      });
-      if (!existing) return slug;
-      slug = `${baseSlug}-${++n}`;
-    }
-  }
-
   // ---------- Counties ----------
   async createCounty(dto: CreateCountyDto) {
     if (dto.code) {
       const existing = await this.prisma.county.findUnique({ where: { code: dto.code } });
       if (existing) throw new ConflictException(`County with code ${dto.code} already exists`);
     }
-    const slug = await this.ensureUniqueCountySlug(slugify(dto.name));
+    const name = normalizeLocationName(dto.name);
+    const baseSlug = slugify(name);
+    const existingBySlug = await this.prisma.county.findFirst({ where: { slug: baseSlug } });
+    if (existingBySlug) throw new ConflictException(`County "${name}" already exists (same name or slug).`);
     return this.prisma.county.create({
-      data: { name: dto.name, slug, code: dto.code ?? null },
+      data: { name, slug: baseSlug, code: dto.code ?? null },
     });
   }
 
@@ -101,11 +56,17 @@ export class LocationsService {
       if (existing) throw new ConflictException(`County with code ${dto.code} already exists`);
     }
     const data: { name?: string; code?: string | null; slug?: string } = {
-      ...(dto.name != null && { name: dto.name }),
       ...(dto.code !== undefined && { code: dto.code }),
     };
     if (dto.name != null) {
-      data.slug = await this.ensureUniqueCountySlug(slugify(dto.name), id);
+      const name = normalizeLocationName(dto.name);
+      data.name = name;
+      const baseSlug = slugify(name);
+      const existingBySlug = await this.prisma.county.findFirst({
+        where: { slug: baseSlug, id: { not: id } },
+      });
+      if (existingBySlug) throw new ConflictException(`County "${name}" already exists (same name or slug).`);
+      data.slug = baseSlug;
     }
     return this.prisma.county.update({
       where: { id },
@@ -121,13 +82,18 @@ export class LocationsService {
   // ---------- SubCounties ----------
   async createSubCounty(dto: CreateSubCountyDto) {
     await this.prisma.county.findUniqueOrThrow({ where: { id: dto.countyId } });
-    const existing = await this.prisma.subCounty.findUnique({
-      where: { countyId_name: { countyId: dto.countyId, name: dto.name } },
+    const name = normalizeLocationName(dto.name);
+    const baseSlug = slugify(name);
+    const existingByName = await this.prisma.subCounty.findUnique({
+      where: { countyId_name: { countyId: dto.countyId, name } },
     });
-    if (existing) throw new ConflictException(`SubCounty "${dto.name}" already exists in this county`);
-    const slug = await this.ensureUniqueSubCountySlug(dto.countyId, slugify(dto.name));
+    if (existingByName) throw new ConflictException(`SubCounty "${name}" already exists in this county`);
+    const existingBySlug = await this.prisma.subCounty.findFirst({
+      where: { countyId: dto.countyId, slug: baseSlug },
+    });
+    if (existingBySlug) throw new ConflictException(`SubCounty "${name}" already exists (same name or slug).`);
     return this.prisma.subCounty.create({
-      data: { name: dto.name, slug, countyId: dto.countyId },
+      data: { name, slug: baseSlug, countyId: dto.countyId },
       include: { county: true },
     });
   }
@@ -152,8 +118,8 @@ export class LocationsService {
   async updateSubCounty(id: string, dto: UpdateSubCountyDto) {
     const current = await this.findSubCountyById(id);
     const countyId = dto.countyId ?? current.countyId;
-    const name = dto.name ?? current.name;
-    if (dto.countyId != null && dto.name != null) {
+    const name = dto.name != null ? normalizeLocationName(dto.name) : current.name;
+    if (dto.countyId != null || dto.name != null) {
       const existing = await this.prisma.subCounty.findUnique({
         where: { countyId_name: { countyId, name } },
       });
@@ -161,11 +127,16 @@ export class LocationsService {
         throw new ConflictException(`SubCounty "${name}" already exists in this county`);
     }
     const data: { name?: string; countyId?: string; slug?: string } = {
-      ...(dto.name != null && { name: dto.name }),
       ...(dto.countyId != null && { countyId: dto.countyId }),
     };
     if (dto.name != null) {
-      data.slug = await this.ensureUniqueSubCountySlug(countyId, slugify(dto.name), id);
+      data.name = name;
+      const baseSlug = slugify(name);
+      const existingBySlug = await this.prisma.subCounty.findFirst({
+        where: { countyId, slug: baseSlug, id: { not: id } },
+      });
+      if (existingBySlug) throw new ConflictException(`SubCounty "${name}" already exists (same name or slug).`);
+      data.slug = baseSlug;
     }
     return this.prisma.subCounty.update({
       where: { id },
@@ -182,13 +153,18 @@ export class LocationsService {
   // ---------- Wards ----------
   async createWard(dto: CreateWardDto) {
     await this.prisma.subCounty.findUniqueOrThrow({ where: { id: dto.subCountyId } });
-    const existing = await this.prisma.ward.findUnique({
-      where: { subCountyId_name: { subCountyId: dto.subCountyId, name: dto.name } },
+    const name = normalizeLocationName(dto.name);
+    const baseSlug = slugify(name);
+    const existingByName = await this.prisma.ward.findUnique({
+      where: { subCountyId_name: { subCountyId: dto.subCountyId, name } },
     });
-    if (existing) throw new ConflictException(`Ward "${dto.name}" already exists in this sub-county`);
-    const slug = await this.ensureUniqueWardSlug(dto.subCountyId, slugify(dto.name));
+    if (existingByName) throw new ConflictException(`Ward "${name}" already exists in this sub-county`);
+    const existingBySlug = await this.prisma.ward.findFirst({
+      where: { subCountyId: dto.subCountyId, slug: baseSlug },
+    });
+    if (existingBySlug) throw new ConflictException(`Ward "${name}" already exists (same name or slug).`);
     return this.prisma.ward.create({
-      data: { name: dto.name, slug, subCountyId: dto.subCountyId },
+      data: { name, slug: baseSlug, subCountyId: dto.subCountyId },
       include: { subCounty: { include: { county: true } } },
     });
   }
@@ -216,19 +192,25 @@ export class LocationsService {
   async updateWard(id: string, dto: UpdateWardDto) {
     const current = await this.findWardById(id);
     const subCountyId = dto.subCountyId ?? current.subCountyId;
-    if (dto.subCountyId != null && dto.name != null) {
+    const name = dto.name != null ? normalizeLocationName(dto.name) : current.name;
+    if (dto.subCountyId != null || dto.name != null) {
       const existing = await this.prisma.ward.findUnique({
-        where: { subCountyId_name: { subCountyId, name: dto.name } },
+        where: { subCountyId_name: { subCountyId, name } },
       });
       if (existing && existing.id !== id)
-        throw new ConflictException(`Ward "${dto.name}" already exists in this sub-county`);
+        throw new ConflictException(`Ward "${name}" already exists in this sub-county`);
     }
     const data: { name?: string; subCountyId?: string; slug?: string } = {
-      ...(dto.name != null && { name: dto.name }),
       ...(dto.subCountyId != null && { subCountyId: dto.subCountyId }),
     };
     if (dto.name != null) {
-      data.slug = await this.ensureUniqueWardSlug(subCountyId, slugify(dto.name), id);
+      data.name = name;
+      const baseSlug = slugify(name);
+      const existingBySlug = await this.prisma.ward.findFirst({
+        where: { subCountyId, slug: baseSlug, id: { not: id } },
+      });
+      if (existingBySlug) throw new ConflictException(`Ward "${name}" already exists (same name or slug).`);
+      data.slug = baseSlug;
     }
     return this.prisma.ward.update({
       where: { id },
@@ -245,29 +227,35 @@ export class LocationsService {
   // ---------- Villages ----------
   async createVillage(dto: CreateVillageDto) {
     await this.prisma.ward.findUniqueOrThrow({ where: { id: dto.wardId } });
-    const existing = await this.prisma.village.findUnique({
-      where: { wardId_name: { wardId: dto.wardId, name: dto.name } },
+    const name = normalizeLocationName(dto.name);
+    const baseSlug = slugify(name);
+    const existingByName = await this.prisma.village.findUnique({
+      where: { wardId_name: { wardId: dto.wardId, name } },
     });
-    if (existing) throw new ConflictException(`Village "${dto.name}" already exists in this ward`);
-    const slug = await this.ensureUniqueVillageSlug(dto.wardId, slugify(dto.name));
+    if (existingByName) throw new ConflictException(`Village "${name}" already exists in this ward`);
+    const existingBySlug = await this.prisma.village.findFirst({
+      where: { wardId: dto.wardId, slug: baseSlug },
+    });
+    if (existingBySlug) throw new ConflictException(`Village "${name}" already exists (same name or slug).`);
     return this.prisma.village.create({
-      data: { name: dto.name, slug, wardId: dto.wardId },
-      include: { ward: { include: { subCounty: { include: { county: true } } } } },
+      data: { name, slug: baseSlug, wardId: dto.wardId },
     });
   }
 
   async findVillagesByWardId(wardId?: string) {
+    // Do not include ward relation: orphan villages (ward deleted without cascade) would make
+    // Prisma throw "Field ward is required to return data, got null". Client can resolve ward
+    // from wardId using the wards list.
     return this.prisma.village.findMany({
       where: wardId ? { wardId } : undefined,
       orderBy: { name: 'asc' },
-      include: { ward: true },
     });
   }
 
   async findVillageById(id: string) {
     const village = await this.prisma.village.findUnique({
       where: { id },
-      include: { ward: { include: { subCounty: { include: { county: true } } } } },
+      // Omit ward include so orphan villages (deleted ward) don't cause "Field ward is required, got null"
     });
     if (!village) throw new NotFoundException('Village not found');
     return village;
@@ -276,24 +264,29 @@ export class LocationsService {
   async updateVillage(id: string, dto: UpdateVillageDto) {
     const current = await this.findVillageById(id);
     const wardId = dto.wardId ?? current.wardId;
-    if (dto.wardId != null && dto.name != null) {
+    const name = dto.name != null ? normalizeLocationName(dto.name) : current.name;
+    if (dto.wardId != null || dto.name != null) {
       const existing = await this.prisma.village.findUnique({
-        where: { wardId_name: { wardId, name: dto.name } },
+        where: { wardId_name: { wardId, name } },
       });
       if (existing && existing.id !== id)
-        throw new ConflictException(`Village "${dto.name}" already exists in this ward`);
+        throw new ConflictException(`Village "${name}" already exists in this ward`);
     }
     const data: { name?: string; wardId?: string; slug?: string } = {
-      ...(dto.name != null && { name: dto.name }),
       ...(dto.wardId != null && { wardId: dto.wardId }),
     };
     if (dto.name != null) {
-      data.slug = await this.ensureUniqueVillageSlug(wardId, slugify(dto.name), id);
+      data.name = name;
+      const baseSlug = slugify(name);
+      const existingBySlug = await this.prisma.village.findFirst({
+        where: { wardId, slug: baseSlug, id: { not: id } },
+      });
+      if (existingBySlug) throw new ConflictException(`Village "${name}" already exists (same name or slug).`);
+      data.slug = baseSlug;
     }
     return this.prisma.village.update({
       where: { id },
       data,
-      include: { ward: { include: { subCounty: { include: { county: true } } } } },
     });
   }
 

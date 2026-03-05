@@ -111,7 +111,10 @@ export class MarketplaceService {
     if (normalizedStatus) {
       where.status = normalizedStatus;
     } else if (!filters?.farmerId) {
-      // Buyer-facing marketplace: only show approved (ACTIVE) listings when not filtering by farmer
+      // Buyer-facing marketplace: only show approved (ACTIVE) listings when not filtering by farmer.
+      // We do NOT filter by expectedReadyAt: approved listings appear even when due date is in the
+      // future so buyers can place advance orders; fulfillment happens when produce is ready/delivered
+      // to aggregation centres.
       where.status = 'ACTIVE';
     }
     // When farmerId is provided (farmer viewing own listings), no status filter = show all statuses
